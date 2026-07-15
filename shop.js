@@ -98,13 +98,16 @@ function renderCategorySlider(){
   wrap.style.display = '';
   track.innerHTML = cats.map(c=>{
     const sample = allProducts.find(p=>p.category===c && p.imageUrl) || allProducts.find(p=>p.category===c);
-    const img = sample && sample.imageUrl ? sample.imageUrl : 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop';
+    const img = sample && sample.imageUrl ? esc(sample.imageUrl) : 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop';
     return `
-    <div class="cat-card" onclick="jumpToCategory('${c.replace(/'/g,"\\'")}')">
-      <img src="${img}" alt="${c}">
-      <div class="cat-card-label">${c}</div>
+    <div class="cat-card" data-cat="${esc(c)}">
+      <img src="${img}" alt="${esc(c)}" loading="lazy">
+      <div class="cat-card-label">${esc(c)}</div>
     </div>`;
   }).join('');
+  track.querySelectorAll('.cat-card').forEach(el=>{
+    el.addEventListener('click', ()=>jumpToCategory(el.dataset.cat));
+  });
 }
 function jumpToCategory(cat){
   activeCategory = cat;
@@ -175,7 +178,7 @@ function renderProductGrid(){
       <div class="img-wrap" onclick="openProductModal('${p.id}')">
         ${p.featured ? '<span class="badge">Bestseller</span>' : ''}
         <span class="stock-badge">${stockLabel}</span>
-        <img src="${p.imageUrl || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop'}" alt="${p.name||''}">
+        <img src="${esc(p.imageUrl) || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop'}" alt="${esc(p.name)}" loading="lazy">
         <button class="quick-add" ${stock<=0?'disabled style="opacity:.5;cursor:not-allowed;bottom:10px;"':''} onclick="addToCart('${p.id}', event)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
           ${stock<=0?'Sold out':'Quick add'}
@@ -183,11 +186,11 @@ function renderProductGrid(){
       </div>
       <div class="card-body">
         <div class="card-cat-row">
-          <div class="card-cat">${p.category||'Skincare'}</div>
-          ${p.unit ? `<div class="card-unit">${p.unit}</div>` : ''}
+          <div class="card-cat">${esc(p.category)||'Skincare'}</div>
+          ${p.unit ? `<div class="card-unit">${esc(p.unit)}</div>` : ''}
         </div>
-        <h3 class="card-name" onclick="openProductModal('${p.id}')">${p.name||'Untitled'}</h3>
-        <p class="card-desc">${(p.description||'').slice(0,80)}${(p.description||'').length>80?'…':''}</p>
+        <h3 class="card-name" onclick="openProductModal('${p.id}')">${esc(p.name)||'Untitled'}</h3>
+        <p class="card-desc">${esc((p.description||'').slice(0,80))}${(p.description||'').length>80?'…':''}</p>
         <div class="card-foot">
           <div class="price-block">
             ${hasDiscount ? `<span class="price-old">${money(p.compareAtPrice)}</span>` : ''}
@@ -214,11 +217,11 @@ function openProductModal(id){
   document.getElementById('productModal').innerHTML = `
     <button class="close-x" onclick="closeProductModal()">✕</button>
     <div class="product-modal-grid">
-      <img src="${p.imageUrl||''}" alt="${p.name||''}">
+      <img src="${esc(p.imageUrl)}" alt="${esc(p.name)}">
       <div>
-        <div class="card-cat-row"><div class="card-cat">${p.category||'Skincare'}</div>${p.unit ? `<div class="card-unit">${p.unit}</div>` : ''}</div>
-        <h2 style="font-weight:500; margin:6px 0 10px;">${p.name||''}</h2>
-        <p style="color:var(--plum-soft); font-size:14px; line-height:1.7;">${p.description||'No description provided yet.'}</p>
+        <div class="card-cat-row"><div class="card-cat">${esc(p.category)||'Skincare'}</div>${p.unit ? `<div class="card-unit">${esc(p.unit)}</div>` : ''}</div>
+        <h2 style="font-weight:500; margin:6px 0 10px;">${esc(p.name)}</h2>
+        <p style="color:var(--plum-soft); font-size:14px; line-height:1.7;">${esc(p.description)||'No description provided yet.'}</p>
         <div style="display:flex; align-items:baseline; gap:10px; margin:16px 0;">
           ${hasDiscount ? `<span class="price-old" style="font-size:15px;">${money(p.compareAtPrice)}</span>` : ''}
           <span style="font-size:22px; font-weight:800;">${money(p.price)}</span>
@@ -241,12 +244,23 @@ function addToCart(id, evt){
   if(evt) evt.stopPropagation();
   const p = allProducts.find(x=>x.id===id);
   if(!p || Number(p.stock||0)<=0) return;
+  const stock = Number(p.stock||0);
+  if((cart[id]||0) >= stock){
+    toast(`Only ${stock} of ${p.name} in stock`);
+    return;
+  }
   cart[id] = (cart[id]||0) + 1;
   renderCart();
   toast(`Added ${p.name} to your bag`);
 }
 function changeQty(id, delta){
   if(!cart[id]) return;
+  const p = allProducts.find(x=>x.id===id);
+  const stock = p ? Number(p.stock||0) : Infinity;
+  if(delta > 0 && cart[id] >= stock){
+    toast(`Only ${stock} in stock`);
+    return;
+  }
   cart[id] += delta;
   if(cart[id] <= 0) delete cart[id];
   renderCart();
@@ -271,9 +285,9 @@ function renderCart(){
     subtotal += lineTotal;
     return `
     <div class="cart-item">
-      <img src="${p.imageUrl||''}" alt="">
+      <img src="${esc(p.imageUrl)}" alt="">
       <div class="cart-item-info">
-        <h5>${p.name}</h5>
+        <h5>${esc(p.name)}</h5>
         <div style="font-size:12.5px; color:var(--plum-soft);">${money(p.price)} each</div>
         <div class="qty-row">
           <button class="qty-btn" onclick="changeQty('${id}',-1)">−</button>
@@ -370,9 +384,23 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     msgBox.innerHTML = '<div class="form-msg err">Please enter the reference number from your payment so we can verify it.</div>';
     return;
   }
+  // Stock can change (or a product can be removed) between adding to cart
+  // and checking out — re-validate against current data before sending.
+  for(const id of Object.keys(cart)){
+    const p = allProducts.find(x=>x.id===id);
+    if(!p){
+      msgBox.innerHTML = '<div class="form-msg err">One of your items is no longer available — please review your bag.</div>';
+      return;
+    }
+    if(cart[id] > Number(p.stock||0)){
+      msgBox.innerHTML = `<div class="form-msg err">Only ${Number(p.stock||0)} of "${p.name}" left — please adjust your bag.</div>`;
+      renderCart();
+      return;
+    }
+  }
   const items = Object.keys(cart).map(id=>{
     const p = allProducts.find(x=>x.id===id);
-    return { productId:id, name:p.name, price:p.price, qty:cart[id] };
+    return { productId:id, name:p.name, price:p.price, costPrice:Number(p.costPrice||0), qty:cart[id] };
   });
   const total = items.reduce((s,i)=>s+i.price*i.qty,0);
 

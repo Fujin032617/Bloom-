@@ -220,6 +220,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script>
   document.getElementById('year').textContent = new Date().getFullYear();
@@ -258,8 +259,8 @@
         document.getElementById('footerTagline').textContent = s.footerTagline;
       }
       if(s.heroLine1 || s.heroLine2){
-        const line1 = s.heroLine1 || 'Skin biology,';
-        const line2 = s.heroLine2 || 'refined';
+        const line1 = esc(s.heroLine1 || 'Skin biology,');
+        const line2 = esc(s.heroLine2 || 'refined');
         document.getElementById('heroHeadline').innerHTML = `${line1}<br><em>${line2}</em> for results.`;
       }
       if(s.heroLede){
@@ -270,19 +271,19 @@
       }
       if(Array.isArray(s.marqueeMessages) && s.marqueeMessages.length){
         const msgs = s.marqueeMessages;
-        const spans = [...msgs, ...msgs].map(m=>`<span>${m}</span>`).join('');
+        const spans = [...msgs, ...msgs].map(m=>`<span>${esc(m)}</span>`).join('');
         document.getElementById('marqueeTrack').innerHTML = spans;
       }
       if(Array.isArray(s.testimonials) && s.testimonials.length){
         document.getElementById('testimonialGrid').innerHTML = s.testimonials.map(t=>{
-          const initials = (t.name||'?').split(' ').map(w=>w.charAt(0)).join('').slice(0,2).toUpperCase();
+          const initials = esc((t.name||'?').split(' ').map(w=>w.charAt(0)).join('').slice(0,2).toUpperCase());
           return `
           <div class="testimonial-card glass">
             <div class="testimonial-stars">★★★★★</div>
-            <p class="testimonial-quote">${t.quote||''}</p>
+            <p class="testimonial-quote">${esc(t.quote)}</p>
             <div class="testimonial-who">
               <div class="testimonial-avatar">${initials}</div>
-              <div><div class="testimonial-name">${t.name||''}</div><div class="testimonial-meta">${t.meta||'Verified order'}</div></div>
+              <div><div class="testimonial-name">${esc(t.name)}</div><div class="testimonial-meta">${esc(t.meta)||'Verified order'}</div></div>
             </div>
           </div>`;
         }).join('');

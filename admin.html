@@ -10,10 +10,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <style>
-  #authGate{ min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg-alt); color:var(--plum-soft); }
+  #authGate{ min-height:100vh; display:flex; align-items:center; justify-content:center; color:var(--plum-soft); }
 </style>
 </head>
 <body>
+
+<div class="bg-field">
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+</div>
 
 <div id="authGate"><p>Checking your admin access…</p></div>
 
@@ -60,7 +66,7 @@
         </div>
         <div class="admin-table-wrap">
           <table>
-            <thead><tr><th style="width:34px;"><input type="checkbox" id="selectAllProducts"></th><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Featured</th><th>Actions</th></tr></thead>
+            <thead><tr><th style="width:34px;"><input type="checkbox" id="selectAllProducts"></th><th>Product</th><th>Category</th><th>Price</th><th>Cost</th><th>Margin</th><th>Stock</th><th>Featured</th><th>Actions</th></tr></thead>
             <tbody id="adminProductBody"></tbody>
           </table>
         </div>
@@ -103,7 +109,7 @@
         <div style="display:grid; grid-template-columns:1.2fr 1fr; gap:22px; align-items:start;">
           <div class="admin-table-wrap">
             <table>
-              <thead><tr><th>Customer</th><th>Items</th><th>Total</th><th>Fulfilled</th></tr></thead>
+              <thead><tr><th>Customer</th><th>Items</th><th>Total</th><th>Cost</th><th>Profit</th><th>Fulfilled</th></tr></thead>
               <tbody id="adminSalesBody"></tbody>
             </table>
           </div>
@@ -149,7 +155,15 @@
             <div class="field"><label>Headline (emphasized word/phrase)</label><input type="text" id="setHeroLine2"></div>
           </div>
           <div class="field"><label>Hero paragraph</label><textarea id="setHeroLede"></textarea></div>
-          <div class="field"><label>Hero image URL</label><input type="text" id="setHeroImage" placeholder="https://..."></div>
+          <div class="field">
+            <label>Hero image</label>
+            <div class="upload-box">
+              <img id="setHeroImagePreview" class="upload-preview" alt="" style="display:none;">
+              <input type="file" id="setHeroImageFile" accept="image/*">
+              <input type="hidden" id="setHeroImage">
+              <div class="upload-progress" id="setHeroImageProgress" style="display:none;"></div>
+            </div>
+          </div>
         </div>
 
         <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
@@ -172,14 +186,30 @@
             <div class="field"><label>GCash account name</label><input type="text" id="setGcashName" placeholder="e.g. Kristine J."></div>
             <div class="field"><label>GCash number</label><input type="text" id="setGcashNumber" placeholder="09xx xxx xxxx"></div>
           </div>
-          <div class="field"><label>GCash QR code image URL</label><input type="text" id="setGcashQR" placeholder="https://..."></div>
+          <div class="field">
+            <label>GCash QR code image</label>
+            <div class="upload-box">
+              <img id="setGcashQRPreview" class="upload-preview" alt="" style="display:none;">
+              <input type="file" id="setGcashQRFile" accept="image/*">
+              <input type="hidden" id="setGcashQR">
+              <div class="upload-progress" id="setGcashQRProgress" style="display:none;"></div>
+            </div>
+          </div>
           <h4 style="font-size:13.5px; margin:20px 0 10px;">Bank transfer / InstaPay</h4>
           <div class="two-col">
             <div class="field"><label>Bank name</label><input type="text" id="setBankName" placeholder="e.g. BPI, BDO"></div>
             <div class="field"><label>Account name</label><input type="text" id="setBankAccountName" placeholder="e.g. Kristine J."></div>
           </div>
           <div class="field"><label>Account number</label><input type="text" id="setBankAccountNumber" placeholder="0000 0000 0000"></div>
-          <div class="field"><label>Bank/InstaPay QR code image URL (optional)</label><input type="text" id="setBankQR" placeholder="https://..."></div>
+          <div class="field">
+            <label>Bank/InstaPay QR code image (optional)</label>
+            <div class="upload-box">
+              <img id="setBankQRPreview" class="upload-preview" alt="" style="display:none;">
+              <input type="file" id="setBankQRFile" accept="image/*">
+              <input type="hidden" id="setBankQR">
+              <div class="upload-progress" id="setBankQRProgress" style="display:none;"></div>
+            </div>
+          </div>
         </div>
 
         <button class="add-product-btn" id="saveSettingsBtn">Save settings</button>
@@ -200,9 +230,10 @@
       <div class="field"><label>Unit / variant</label><input type="text" id="editUnit" placeholder="e.g. 10mL / vial"></div>
     </div>
     <div class="two-col">
-      <div class="field"><label>Price (₱)</label><input type="number" id="editPrice" placeholder="0.00"></div>
-      <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale"></div>
+      <div class="field"><label>Selling price (₱)</label><input type="number" id="editPrice" placeholder="0.00"></div>
+      <div class="field"><label>Cost price (₱, what you paid)</label><input type="number" id="editCostPrice" placeholder="0.00"></div>
     </div>
+    <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale"></div>
     <div class="two-col">
       <div class="field"><label>Stock quantity</label><input type="number" id="editStock" placeholder="0"></div>
       <div class="field"><label>Low stock alert at</label><input type="number" id="editLowStock" placeholder="5"></div>
@@ -210,7 +241,15 @@
     <div class="field"><label>Show "Bestseller" badge?</label>
       <select id="editFeatured"><option value="false">No</option><option value="true">Yes</option></select>
     </div>
-    <div class="field"><label>Image URL</label><input type="text" id="editImage" placeholder="https://..."></div>
+    <div class="field">
+      <label>Product photo</label>
+      <div class="upload-box">
+        <img id="editImagePreview" class="upload-preview" alt="" style="display:none;">
+        <input type="file" id="editImageFile" accept="image/*">
+        <input type="hidden" id="editImage">
+        <div class="upload-progress" id="editImageProgress" style="display:none;"></div>
+      </div>
+    </div>
     <div class="field"><label>Description</label><textarea id="editDescription" placeholder="Short, factual description"></textarea></div>
     <button class="full-btn" id="saveProductBtn">Save product</button>
     <div id="editMsg"></div>
@@ -222,6 +261,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="admin.js"></script>
 </body>

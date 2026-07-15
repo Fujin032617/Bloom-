@@ -95,18 +95,23 @@
 
 <style>
   body{ display:flex; align-items:center; justify-content:center; min-height:100vh; }
-  .login-wrap{ display:flex; align-items:center; justify-content:center; min-height:100vh; width:100%; padding:20px; }
-  .login-card{background:#fff; border-radius:24px; padding:44px; width:100%; max-width:400px; box-shadow:0 20px 60px rgba(58,39,64,0.2); text-align:center;}
+  .login-card{ text-align:center; max-width:400px; }
   .login-card h2{font-family:'Fraunces',serif; margin:14px 0 6px; font-weight:500;}
   .login-card p.sub{color:var(--plum-soft); font-size:13.5px; margin:0 0 26px;}
   .login-logo{width:130px; max-width:60%;}
-  .mode-toggle{display:flex; gap:8px; background:var(--bg-alt); border-radius:999px; padding:4px; margin-bottom:24px;}
+  .mode-toggle{display:flex; gap:8px; background:rgba(255,255,255,0.5); border-radius:999px; padding:4px; margin-bottom:24px;}
   .mode-btn{flex:1; border:none; background:none; padding:10px; border-radius:999px; font-weight:700; font-size:13px; cursor:pointer; color:var(--plum-soft);}
   .mode-btn.active{background:var(--plum); color:#fff;}
   .field{text-align:left;}
 </style>
 </head>
 <body>
+
+<div class="bg-field">
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+</div>
 
 <div class="login-wrap">
   <div class="login-card glass">
@@ -153,6 +158,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 <script src="firebase-config.js"></script>
 <script>

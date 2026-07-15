@@ -14,6 +14,7 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 const auth = firebase.auth();
+const storage = firebase.storage();
 
 // ---------------------------------------------------------------------
 // Small shared helpers
@@ -22,12 +23,101 @@ function money(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
+// Escapes text before it's dropped into innerHTML. Product names/descriptions
+// and — importantly — customer-submitted checkout fields (name, phone,
+// address, notes) all flow into admin.html and shop.html via innerHTML, so
+// without this a customer could type something like <img onerror=...> into
+// an order note and have it execute in the admin's browser. Always run any
+// user- or admin-entered text through this before interpolating it into a
+// template string that gets assigned to innerHTML.
+function esc(str){
+  return String(str==null ? '' : str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
 function toast(msg){
   const t = document.getElementById('toast');
   if(!t) return;
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+// ---------------------------------------------------------------------
+// IMAGE UPLOADS (Firebase Storage)
+// ---------------------------------------------------------------------
+// Uploads a File to Storage under `folder/` and returns its public download
+// URL. `onProgress(pct)` is called (0-100) as the upload proceeds, if given.
+// Throws if the file is missing, too big, or not an image.
+function uploadImageToStorage(file, folder, onProgress){
+  return new Promise((resolve, reject)=>{
+    if(!file) return reject(new Error('No file selected'));
+    if(!file.type || !file.type.startsWith('image/')) return reject(new Error('Please choose an image file'));
+    const MAX_MB = 5;
+    if(file.size > MAX_MB * 1024 * 1024) return reject(new Error(`Image is too large — please use one under ${MAX_MB}MB`));
+
+    const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const path = `${folder}/${Date.now()}_${safeName}`;
+    const task = storage.ref(path).put(file);
+
+    task.on('state_changed',
+      (snap)=>{
+        if(onProgress) onProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100));
+      },
+      (err)=> reject(err),
+      async ()=>{
+        try{
+          const url = await task.snapshot.ref.getDownloadURL();
+          resolve(url);
+        }catch(err){ reject(err); }
+      }
+    );
+  });
+}
+
+// Wires up a simple "upload image" control: a file <input>, an <img> preview,
+// and a hidden text input that holds the resulting Storage URL (which is what
+// actually gets saved to Firestore, same as the old manual URL field).
+// `existingUrl` pre-fills the preview when editing something that already
+// has an image. Call this once per control, right after the modal/form is
+// shown with its current values.
+function wireImageUpload({ fileInputId, previewId, urlFieldId, progressId, folder, existingUrl }){
+  const fileInput = document.getElementById(fileInputId);
+  const preview = document.getElementById(previewId);
+  const urlField = document.getElementById(urlFieldId);
+  const progressEl = progressId ? document.getElementById(progressId) : null;
+  if(!fileInput || !urlField) return;
+
+  urlField.value = existingUrl || '';
+  if(preview){
+    if(existingUrl){ preview.src = existingUrl; preview.style.display = 'block'; }
+    else { preview.src = ''; preview.style.display = 'none'; }
+  }
+  fileInput.value = '';
+
+  fileInput.onchange = async ()=>{
+    const file = fileInput.files && fileInput.files[0];
+    if(!file) return;
+    if(preview){
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = 'block';
+    }
+    if(progressEl){ progressEl.style.display = 'block'; progressEl.textContent = 'Uploading… 0%'; }
+    try{
+      const url = await uploadImageToStorage(file, folder, (pct)=>{
+        if(progressEl) progressEl.textContent = `Uploading… ${pct}%`;
+      });
+      urlField.value = url;
+      if(progressEl){ progressEl.textContent = 'Uploaded ✓'; setTimeout(()=>{ progressEl.style.display = 'none'; }, 1500); }
+    }catch(err){
+      if(progressEl){ progressEl.style.display = 'block'; progressEl.textContent = 'Upload failed: ' + err.message; }
+      toast('Image upload failed: ' + err.message);
+    }
+  };
 }
 
 // ---------------------------------------------------------------------

@@ -86,7 +86,7 @@ function renderAdminProducts(){
   const liveIds = new Set(allProducts.map(p=>p.id));
   selectedProductIds.forEach(id=>{ if(!liveIds.has(id)) selectedProductIds.delete(id); });
   if(allProducts.length===0){
-    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet. Click "Add product" to create your first listing.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet. Click "Add product" to create your first listing.</td></tr>`;
     renderBulkBar();
     return;
   }
@@ -95,7 +95,7 @@ function renderAdminProducts(){
     rows = rows.filter(p=>(p.name||'').toLowerCase().includes(adminSearchTerm) || (p.category||'').toLowerCase().includes(adminSearchTerm));
   }
   if(rows.length===0){
-    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No products match "${adminSearchTerm}".</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--plum-soft); padding:40px;">No products match "${adminSearchTerm}".</td></tr>`;
     renderBulkBar();
     return;
   }
@@ -105,12 +105,18 @@ function renderAdminProducts(){
     const pillClass = stock<=0 ? 'out' : (stock<=threshold ? 'low' : 'in');
     const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? stock+' left' : stock+' in stock');
     const checked = selectedProductIds.has(p.id) ? 'checked' : '';
+    const cost = Number(p.costPrice||0);
+    const price = Number(p.price||0);
+    const marginPct = price>0 ? ((price-cost)/price*100) : 0;
+    const marginLabel = cost>0 ? `${marginPct.toFixed(0)}%` : '—';
     return `
     <tr>
       <td><input type="checkbox" class="product-select-box" data-id="${p.id}" ${checked}></td>
-      <td><div class="row-prod"><img src="${p.imageUrl||''}" alt="">${p.name||'Untitled'}</div></td>
-      <td>${p.category||'—'}</td>
+      <td><div class="row-prod"><img src="${esc(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
+      <td>${esc(p.category)||'—'}</td>
       <td>${money(p.price)}</td>
+      <td>${cost>0 ? money(cost) : '—'}</td>
+      <td>${marginLabel}</td>
       <td><span class="pill ${pillClass}">${pillLabel}</span></td>
       <td>${p.featured ? '★ Yes' : '—'}</td>
       <td>
@@ -168,8 +174,10 @@ document.getElementById('bulkUnfeatureBtn').addEventListener('click', async ()=>
   toast(`Removed featured from ${ids.length} product${ids.length===1?'':'s'}`);
 });
 document.getElementById('bulkDiscountBtn').addEventListener('click', async ()=>{
-  const pct = parseFloat(prompt('Apply what percent discount to the selected products? (e.g. 15 for 15% off)'));
-  if(!pct || pct<=0 || pct>=100){ if(pct!==0) alert('Enter a percentage between 1 and 99.'); return; }
+  const raw = prompt('Apply what percent discount to the selected products? (e.g. 15 for 15% off)');
+  if(raw === null) return; // user cancelled — do nothing, no error
+  const pct = parseFloat(raw);
+  if(!pct || pct<=0 || pct>=100){ alert('Enter a percentage between 1 and 99.'); return; }
   const ids = Array.from(selectedProductIds);
   await Promise.all(ids.map(async id=>{
     const p = allProducts.find(x=>x.id===id);
@@ -252,7 +260,7 @@ function renderInventory(){
       const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? 'Low stock' : 'Healthy');
       return `
       <tr>
-        <td><div class="row-prod"><img src="${p.imageUrl||''}" alt="">${p.name||'Untitled'}</div></td>
+        <td><div class="row-prod"><img src="${esc(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
         <td><strong>${stock}</strong></td>
         <td>${threshold}</td>
         <td><span class="pill ${pillClass}">${pillLabel}</span></td>
@@ -297,9 +305,9 @@ function renderMovements(){
     const changeColor = m.qtyChange>=0 ? '#2c6e49' : '#a13333';
     return `
     <tr>
-      <td>${m.productName||'—'}</td>
+      <td>${esc(m.productName)||'—'}</td>
       <td style="color:${changeColor}; font-weight:700;">${changeLabel}</td>
-      <td>${m.reason||'—'}</td>
+      <td>${esc(m.reason)||'—'}</td>
       <td>${m.resultingStock!=null ? m.resultingStock : '—'}</td>
       <td>${date}</td>
     </tr>`;
@@ -320,10 +328,14 @@ function openEditModal(id){
   document.getElementById('editCompareAtPrice').value = p && p.compareAtPrice ? p.compareAtPrice : '';
   document.getElementById('editStock').value = p ? p.stock||0 : '';
   document.getElementById('editLowStock').value = p ? (p.lowStock!=null ? p.lowStock : 5) : 5;
+  document.getElementById('editCostPrice').value = p && p.costPrice!=null ? p.costPrice : '';
   document.getElementById('editFeatured').value = p && p.featured ? 'true' : 'false';
-  document.getElementById('editImage').value = p ? p.imageUrl||'' : '';
   document.getElementById('editDescription').value = p ? p.description||'' : '';
   document.getElementById('editMsg').innerHTML = '';
+  wireImageUpload({
+    fileInputId:'editImageFile', previewId:'editImagePreview', urlFieldId:'editImage',
+    progressId:'editImageProgress', folder:'products', existingUrl: p ? p.imageUrl||'' : ''
+  });
   document.getElementById('editModalOverlay').classList.add('show');
 }
 document.getElementById('addProductBtn').addEventListener('click', ()=>openEditModal(null));
@@ -332,10 +344,17 @@ document.getElementById('editCloseBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
+  const imgProgress = document.getElementById('editImageProgress');
+  if(imgProgress && imgProgress.style.display!=='none' && imgProgress.textContent.startsWith('Uploading')){
+    document.getElementById('editMsg').innerHTML = '<div class="form-msg err">Please wait for the photo to finish uploading.</div>';
+    return;
+  }
   const name = document.getElementById('editName').value.trim();
   const category = document.getElementById('editCategory').value.trim();
   const unit = document.getElementById('editUnit').value.trim();
   const price = parseFloat(document.getElementById('editPrice').value) || 0;
+  const costPriceRaw = document.getElementById('editCostPrice').value.trim();
+  const costPrice = costPriceRaw ? parseFloat(costPriceRaw) : 0;
   const compareAtPriceRaw = document.getElementById('editCompareAtPrice').value.trim();
   const compareAtPrice = compareAtPriceRaw ? parseFloat(compareAtPriceRaw) : null;
   const stock = parseInt(document.getElementById('editStock').value) || 0;
@@ -349,7 +368,7 @@ document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
     return;
   }
   const lowStock = parseInt(document.getElementById('editLowStock').value) || 5;
-  const data = { name, category, unit, price, compareAtPrice, stock, lowStock, featured, imageUrl, description };
+  const data = { name, category, unit, price, costPrice, compareAtPrice, stock, lowStock, featured, imageUrl, description };
   try{
     if(editingProductId){
       await db.collection('products').doc(editingProductId).update(data);
@@ -395,7 +414,7 @@ function renderAdminOrders(){
     return;
   }
   body.innerHTML = orders.map(o=>{
-    const itemSummary = (o.items||[]).map(i=>`${i.qty}× ${i.name}`).join(', ');
+    const itemSummary = (o.items||[]).map(i=>`${esc(i.qty)}× ${esc(i.name)}`).join(', ');
     const date = o.createdAt && o.createdAt.toDate ? o.createdAt.toDate().toLocaleDateString() : '—';
     const status = o.status || 'new';
     const options = ORDER_STATUSES.map(s=>`<option value="${s}" ${s===status?'selected':''}>${ORDER_STATUS_LABELS[s]}</option>`).join('');
@@ -404,12 +423,12 @@ function renderAdminOrders(){
     const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : '—');
     return `
     <tr>
-      <td><strong>${o.customerName||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${o.phone||''}</span></td>
+      <td><strong>${esc(o.customerName)||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${esc(o.phone)}</span></td>
       <td style="max-width:220px;">${itemSummary}</td>
       <td>${money(o.total)}</td>
       <td>
         <span class="pill pay-${payStatus}">${payLabel}</span><br>
-        <span style="font-size:11.5px; color:var(--plum-soft);">${methodLabel}${o.paymentReference ? ' · Ref: '+o.paymentReference : ''}</span><br>
+        <span style="font-size:11.5px; color:var(--plum-soft);">${methodLabel}${o.paymentReference ? ' · Ref: '+esc(o.paymentReference) : ''}</span><br>
         ${payStatus!=='verified' && o.paymentMethod ? `<button class="icon-btn" style="margin-top:4px;" onclick="verifyPayment('${o.id}')">Mark verified</button>` : ''}
       </td>
       <td>
@@ -473,11 +492,26 @@ function renderSalesDashboard(){
     const d = o.fulfilledAt && o.fulfilledAt.toDate ? o.fulfilledAt.toDate() : (o.createdAt && o.createdAt.toDate ? o.createdAt.toDate() : null);
     return d && d >= start;
   }
+  // Cost of an order: sum of each item's snapshotted costPrice × qty. Orders
+  // placed before cost tracking existed (or items missing a costPrice) count
+  // as 0 cost for that item, so profit falls back to showing full revenue
+  // for those rather than guessing.
+  function orderCost(o){
+    return (o.items||[]).reduce((s,i)=>s+Number(i.costPrice||0)*Number(i.qty||0),0);
+  }
+  function orderProfit(o){
+    return Number(o.total||0) - orderCost(o);
+  }
+
   const revToday = orders.filter(o=>within(o,startOfToday)).reduce((s,o)=>s+Number(o.total||0),0);
   const revWeek = orders.filter(o=>within(o,startOfWeek)).reduce((s,o)=>s+Number(o.total||0),0);
   const revMonth = orders.filter(o=>within(o,startOfMonth)).reduce((s,o)=>s+Number(o.total||0),0);
   const revAll = orders.reduce((s,o)=>s+Number(o.total||0),0);
   const avgOrder = orders.length ? revAll/orders.length : 0;
+  const costAll = orders.reduce((s,o)=>s+orderCost(o),0);
+  const profitAll = revAll - costAll;
+  const marginAll = revAll>0 ? (profitAll/revAll*100) : 0;
+  const profitMonth = orders.filter(o=>within(o,startOfMonth)).reduce((s,o)=>s+orderProfit(o),0);
 
   salesRow.innerHTML = `
     <div class="stat-card"><div class="num">${money(revToday)}</div><div class="label">Revenue today</div></div>
@@ -486,20 +520,28 @@ function renderSalesDashboard(){
     <div class="stat-card"><div class="num">${money(revAll)}</div><div class="label">All-time revenue</div></div>
     <div class="stat-card"><div class="num">${orders.length}</div><div class="label">Fulfilled orders</div></div>
     <div class="stat-card"><div class="num">${money(avgOrder)}</div><div class="label">Avg. order value</div></div>
+    <div class="stat-card"><div class="num">${money(costAll)}</div><div class="label">All-time cost of goods</div></div>
+    <div class="stat-card"><div class="num">${money(profitMonth)}</div><div class="label">Profit this month</div></div>
+    <div class="stat-card"><div class="num">${money(profitAll)}</div><div class="label">All-time profit</div></div>
+    <div class="stat-card"><div class="num">${marginAll.toFixed(1)}%</div><div class="label">Overall margin</div></div>
   `;
 
   const body = document.getElementById('adminSalesBody');
   if(orders.length===0){
-    body.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--plum-soft); padding:40px;">No completed sales yet.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No completed sales yet.</td></tr>`;
   } else {
     body.innerHTML = orders.slice(0,30).map(o=>{
-      const itemSummary = (o.items||[]).map(i=>`${i.qty}× ${i.name}`).join(', ');
+      const itemSummary = (o.items||[]).map(i=>`${esc(i.qty)}× ${esc(i.name)}`).join(', ');
       const date = o.fulfilledAt && o.fulfilledAt.toDate ? o.fulfilledAt.toDate().toLocaleDateString() : '—';
+      const cost = orderCost(o);
+      const profit = orderProfit(o);
       return `
       <tr>
-        <td><strong>${o.customerName||'—'}</strong></td>
+        <td><strong>${esc(o.customerName)||'—'}</strong></td>
         <td style="max-width:220px;">${itemSummary}</td>
         <td>${money(o.total)}</td>
+        <td>${money(cost)}</td>
+        <td>${money(profit)}</td>
         <td>${date}</td>
       </tr>`;
     }).join('');
@@ -519,7 +561,7 @@ function renderSalesDashboard(){
   } else {
     list.innerHTML = ranked.map(([name,qty])=>`
       <div class="seller-row">
-        <div class="seller-row-top"><span>${name}</span><strong>${qty} sold</strong></div>
+        <div class="seller-row-top"><span>${esc(name)}</span><strong>${qty} sold</strong></div>
         <div class="seller-bar-track"><div class="seller-bar-fill" style="width:${(qty/maxQty*100).toFixed(0)}%"></div></div>
       </div>
     `).join('');
@@ -562,7 +604,7 @@ function renderTestimonialList(){
       <div class="repeat-row" style="flex-wrap:wrap;">
         <div class="field" style="min-width:140px;"><label>Name</label><input type="text" class="test-name" data-i="${i}" value="${(t.name||'').replace(/"/g,'&quot;')}"></div>
         <div class="field" style="min-width:140px;"><label>Meta (e.g. "Verified order")</label><input type="text" class="test-meta" data-i="${i}" value="${(t.meta||'').replace(/"/g,'&quot;')}"></div>
-        <div class="field" style="flex-basis:100%;"><label>Quote</label><textarea class="test-quote" data-i="${i}">${t.quote||''}</textarea></div>
+        <div class="field" style="flex-basis:100%;"><label>Quote</label><textarea class="test-quote" data-i="${i}">${esc(t.quote)}</textarea></div>
         <button type="button" class="remove-row-btn" onclick="removeTestimonial(${i})">Remove</button>
       </div>`).join('');
   }
@@ -587,14 +629,14 @@ async function loadSettingsIntoForm(){
     document.getElementById('setHeroLine1').value = s.heroLine1 || 'Skin biology,';
     document.getElementById('setHeroLine2').value = s.heroLine2 || 'refined';
     document.getElementById('setHeroLede').value = s.heroLede || "Peptide-driven formulas built around ingredients like GHK-Cu, sourced carefully and presented plainly — so you know exactly what you're getting.";
-    document.getElementById('setHeroImage').value = s.heroImage || '';
     document.getElementById('setGcashName').value = s.gcashName || '';
     document.getElementById('setGcashNumber').value = s.gcashNumber || '';
-    document.getElementById('setGcashQR').value = s.gcashQR || '';
     document.getElementById('setBankName').value = s.bankName || '';
     document.getElementById('setBankAccountName').value = s.bankAccountName || '';
     document.getElementById('setBankAccountNumber').value = s.bankAccountNumber || '';
-    document.getElementById('setBankQR').value = s.bankQR || '';
+    wireImageUpload({ fileInputId:'setHeroImageFile', previewId:'setHeroImagePreview', urlFieldId:'setHeroImage', progressId:'setHeroImageProgress', folder:'settings', existingUrl: s.heroImage||'' });
+    wireImageUpload({ fileInputId:'setGcashQRFile', previewId:'setGcashQRPreview', urlFieldId:'setGcashQR', progressId:'setGcashQRProgress', folder:'settings', existingUrl: s.gcashQR||'' });
+    wireImageUpload({ fileInputId:'setBankQRFile', previewId:'setBankQRPreview', urlFieldId:'setBankQR', progressId:'setBankQRProgress', folder:'settings', existingUrl: s.bankQR||'' });
     marqueeMessages = Array.isArray(s.marqueeMessages) && s.marqueeMessages.length ? s.marqueeMessages.slice() : [
       'Free shipping on orders over ₱3,000',
       'Same-day dispatch on weekday orders before 3PM',
@@ -610,6 +652,14 @@ async function loadSettingsIntoForm(){
   }catch(err){ console.error(err); }
 }
 document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
+  const uploadingIds = ['setHeroImageProgress','setGcashQRProgress','setBankQRProgress'];
+  for(const id of uploadingIds){
+    const el = document.getElementById(id);
+    if(el && el.style.display!=='none' && el.textContent.startsWith('Uploading')){
+      document.getElementById('settingsMsg').innerHTML = '<div class="form-msg err">Please wait for images to finish uploading.</div>';
+      return;
+    }
+  }
   const data = {
     storeName: document.getElementById('setStoreName').value.trim(),
     contactEmail: document.getElementById('setContactEmail').value.trim(),
@@ -663,7 +713,7 @@ function renderUsers(){
     const isSelf = u.id === myUid;
     return `
     <tr>
-      <td><span class="user-avatar-sm">${initial}</span><strong>${u.name || '—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${u.email||''}</span></td>
+      <td><span class="user-avatar-sm">${esc(initial)}</span><strong>${esc(u.name) || '—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${esc(u.email)}</span></td>
       <td><span class="pill role-${role}">${role}</span></td>
       <td>${date}</td>
       <td>
