@@ -1,0 +1,688 @@
+// =====================================================================
+// ADMIN.HTML — store management dashboard logic
+// Requires firebase-config.js to be loaded first.
+// Only accounts whose users/{uid} document has role:"admin" get in —
+// see the setup notes in login.html for how to promote an account.
+// =====================================================================
+
+let allProducts = [];
+let adminSearchTerm = '';
+let editingProductId = null;
+let selectedProductIds = new Set();
+
+// ============================================================
+// AUTH GATE
+// ============================================================
+requireRole(['admin'], (user)=>{
+  document.getElementById('authGate').style.display = 'none';
+  document.getElementById('adminDashboard').style.display = 'grid';
+  const avatar = document.getElementById('adminAvatar');
+  if(avatar) avatar.textContent = (user.email||'A').charAt(0).toUpperCase();
+
+  listenProducts();
+  listenOrders();
+  listenMovements();
+  listenUsers();
+  loadSettingsIntoForm();
+});
+
+document.getElementById('signOutBtn').addEventListener('click', ()=>{
+  auth.signOut().then(()=>{ window.location.href = 'login.html'; });
+});
+
+// ============================================================
+// NAV BETWEEN PANELS
+// ============================================================
+document.querySelectorAll('.admin-nav-btn[data-panel]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.admin-nav-btn[data-panel]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.admin-panel').forEach(p=>p.style.display='none');
+    document.getElementById(btn.dataset.panel).style.display='block';
+    const searchBox = document.getElementById('adminSearchInput');
+    if(searchBox){
+      searchBox.placeholder = btn.dataset.panel === 'panelOrders' ? 'Search orders by customer or phone…' : 'Search products or orders…';
+    }
+  });
+});
+
+const adminSearchInput = document.getElementById('adminSearchInput');
+if(adminSearchInput){
+  adminSearchInput.addEventListener('input', ()=>{
+    adminSearchTerm = adminSearchInput.value.trim().toLowerCase();
+    renderAdminProducts();
+    renderAdminOrders();
+  });
+}
+
+// ============================================================
+// PRODUCTS (live)
+// ============================================================
+function listenProducts(){
+  db.collection('products').orderBy('createdAt','desc').onSnapshot(snap=>{
+    allProducts = [];
+    snap.forEach(doc=> allProducts.push({id:doc.id, ...doc.data()}));
+    renderAdminProducts();
+    renderStats();
+    renderInventory();
+  }, err=>console.error(err));
+}
+
+function renderStats(){
+  const total = allProducts.length;
+  const outOfStock = allProducts.filter(p=>Number(p.stock||0)<=0).length;
+  const featured = allProducts.filter(p=>p.featured).length;
+  const value = allProducts.reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
+  document.getElementById('statRow').innerHTML = `
+    <div class="stat-card"><div class="num">${total}</div><div class="label">Total products</div></div>
+    <div class="stat-card"><div class="num">${outOfStock}</div><div class="label">Out of stock</div></div>
+    <div class="stat-card"><div class="num">${featured}</div><div class="label">Featured</div></div>
+    <div class="stat-card"><div class="num">${money(value)}</div><div class="label">Inventory value</div></div>
+  `;
+}
+
+function renderAdminProducts(){
+  const body = document.getElementById('adminProductBody');
+  const liveIds = new Set(allProducts.map(p=>p.id));
+  selectedProductIds.forEach(id=>{ if(!liveIds.has(id)) selectedProductIds.delete(id); });
+  if(allProducts.length===0){
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet. Click "Add product" to create your first listing.</td></tr>`;
+    renderBulkBar();
+    return;
+  }
+  let rows = allProducts;
+  if(adminSearchTerm){
+    rows = rows.filter(p=>(p.name||'').toLowerCase().includes(adminSearchTerm) || (p.category||'').toLowerCase().includes(adminSearchTerm));
+  }
+  if(rows.length===0){
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No products match "${adminSearchTerm}".</td></tr>`;
+    renderBulkBar();
+    return;
+  }
+  body.innerHTML = rows.map(p=>{
+    const stock = Number(p.stock||0);
+    const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
+    const pillClass = stock<=0 ? 'out' : (stock<=threshold ? 'low' : 'in');
+    const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? stock+' left' : stock+' in stock');
+    const checked = selectedProductIds.has(p.id) ? 'checked' : '';
+    return `
+    <tr>
+      <td><input type="checkbox" class="product-select-box" data-id="${p.id}" ${checked}></td>
+      <td><div class="row-prod"><img src="${p.imageUrl||''}" alt="">${p.name||'Untitled'}</div></td>
+      <td>${p.category||'—'}</td>
+      <td>${money(p.price)}</td>
+      <td><span class="pill ${pillClass}">${pillLabel}</span></td>
+      <td>${p.featured ? '★ Yes' : '—'}</td>
+      <td>
+        <button class="icon-btn" onclick="openEditModal('${p.id}')">Edit</button>
+        <button class="icon-btn danger" onclick="deleteProduct('${p.id}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  body.querySelectorAll('.product-select-box').forEach(box=>{
+    box.addEventListener('change', ()=>{
+      if(box.checked) selectedProductIds.add(box.dataset.id);
+      else selectedProductIds.delete(box.dataset.id);
+      renderBulkBar();
+    });
+  });
+  renderBulkBar();
+}
+
+// ============================================================
+// BULK PRODUCT ACTIONS
+// ============================================================
+function renderBulkBar(){
+  const bar = document.getElementById('bulkBar');
+  const label = document.getElementById('bulkCountLabel');
+  const selectAll = document.getElementById('selectAllProducts');
+  if(!bar) return;
+  const count = selectedProductIds.size;
+  bar.style.display = count>0 ? 'flex' : 'none';
+  label.textContent = `${count} selected`;
+  if(selectAll){
+    const visibleIds = Array.from(document.querySelectorAll('.product-select-box')).map(b=>b.dataset.id);
+    selectAll.checked = visibleIds.length>0 && visibleIds.every(id=>selectedProductIds.has(id));
+  }
+}
+document.getElementById('selectAllProducts').addEventListener('change', (e)=>{
+  document.querySelectorAll('.product-select-box').forEach(box=>{
+    box.checked = e.target.checked;
+    if(e.target.checked) selectedProductIds.add(box.dataset.id);
+    else selectedProductIds.delete(box.dataset.id);
+  });
+  renderBulkBar();
+});
+document.getElementById('bulkClearBtn').addEventListener('click', ()=>{
+  selectedProductIds.clear();
+  renderAdminProducts();
+});
+document.getElementById('bulkFeatureBtn').addEventListener('click', async ()=>{
+  const ids = Array.from(selectedProductIds);
+  await Promise.all(ids.map(id=>db.collection('products').doc(id).update({featured:true})));
+  toast(`Marked ${ids.length} product${ids.length===1?'':'s'} as featured`);
+});
+document.getElementById('bulkUnfeatureBtn').addEventListener('click', async ()=>{
+  const ids = Array.from(selectedProductIds);
+  await Promise.all(ids.map(id=>db.collection('products').doc(id).update({featured:false})));
+  toast(`Removed featured from ${ids.length} product${ids.length===1?'':'s'}`);
+});
+document.getElementById('bulkDiscountBtn').addEventListener('click', async ()=>{
+  const pct = parseFloat(prompt('Apply what percent discount to the selected products? (e.g. 15 for 15% off)'));
+  if(!pct || pct<=0 || pct>=100){ if(pct!==0) alert('Enter a percentage between 1 and 99.'); return; }
+  const ids = Array.from(selectedProductIds);
+  await Promise.all(ids.map(async id=>{
+    const p = allProducts.find(x=>x.id===id);
+    if(!p) return;
+    const basePrice = p.compareAtPrice ? Number(p.compareAtPrice) : Number(p.price);
+    const newPrice = Math.round(basePrice * (1 - pct/100) * 100) / 100;
+    await db.collection('products').doc(id).update({ compareAtPrice: basePrice, price: newPrice });
+  }));
+  toast(`Applied ${pct}% discount to ${ids.length} product${ids.length===1?'':'s'}`);
+});
+document.getElementById('bulkDeleteBtn').addEventListener('click', async ()=>{
+  const ids = Array.from(selectedProductIds);
+  if(ids.length===0) return;
+  if(!confirm(`Delete ${ids.length} selected product${ids.length===1?'':'s'}? This cannot be undone.`)) return;
+  await Promise.all(ids.map(id=>db.collection('products').doc(id).delete()));
+  selectedProductIds.clear();
+  toast('Selected products deleted');
+});
+
+async function deleteProduct(id){
+  if(!confirm('Delete this product? This cannot be undone.')) return;
+  try{
+    await db.collection('products').doc(id).delete();
+    toast('Product deleted');
+  }catch(err){ alert(err.message); }
+}
+
+// ============================================================
+// INVENTORY
+// ============================================================
+window._movements = [];
+function listenMovements(){
+  db.collection('stockMovements').orderBy('createdAt','desc').limit(50).onSnapshot(snap=>{
+    window._movements = [];
+    snap.forEach(doc=> window._movements.push({id:doc.id, ...doc.data()}));
+    renderMovements();
+  }, err=>console.error(err));
+}
+
+// Adjusts a product's stock by delta (positive to restock, negative to remove/correct)
+// and writes an entry to the stockMovements log. Uses a transaction so concurrent
+// adjustments (or a sale happening at the same time) never overwrite each other.
+async function adjustStock(productId, delta, reason){
+  const productRef = db.collection('products').doc(productId);
+  try{
+    let newStock, productName;
+    await db.runTransaction(async (tx)=>{
+      const doc = await tx.get(productRef);
+      if(!doc.exists) throw new Error('Product no longer exists');
+      const current = Number(doc.data().stock||0);
+      newStock = Math.max(0, current + delta);
+      productName = doc.data().name;
+      tx.update(productRef, {stock:newStock});
+    });
+    await db.collection('stockMovements').add({
+      productId, productName, qtyChange:delta, reason: reason||'Manual adjustment',
+      resultingStock:newStock, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast(delta>=0 ? `Added ${delta} to stock` : `Removed ${Math.abs(delta)} from stock`);
+  }catch(err){ alert(err.message); }
+}
+
+function quickAdjust(productId, sign){
+  const input = document.getElementById('qtyInput-'+productId);
+  const qty = parseInt(input.value) || 1;
+  adjustStock(productId, sign*qty, sign>0 ? 'Restock' : 'Manual correction');
+  input.value = '';
+}
+
+function renderInventory(){
+  const body = document.getElementById('adminInventoryBody');
+  if(!body) return;
+  if(allProducts.length===0){
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet — add one from the Products tab first.</td></tr>`;
+  } else {
+    body.innerHTML = allProducts.map(p=>{
+      const stock = Number(p.stock||0);
+      const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
+      const pillClass = stock<=0 ? 'out' : (stock<=threshold ? 'low' : 'in');
+      const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? 'Low stock' : 'Healthy');
+      return `
+      <tr>
+        <td><div class="row-prod"><img src="${p.imageUrl||''}" alt="">${p.name||'Untitled'}</div></td>
+        <td><strong>${stock}</strong></td>
+        <td>${threshold}</td>
+        <td><span class="pill ${pillClass}">${pillLabel}</span></td>
+        <td>
+          <div class="qty-adjust">
+            <input type="number" min="1" placeholder="qty" id="qtyInput-${p.id}">
+            <button class="mini-btn" onclick="quickAdjust('${p.id}',1)">+ Restock</button>
+            <button class="mini-btn subtract" onclick="quickAdjust('${p.id}',-1)">− Remove</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  const totalUnits = allProducts.reduce((s,p)=>s+Number(p.stock||0),0);
+  const lowCount = allProducts.filter(p=>{
+    const stock = Number(p.stock||0);
+    const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
+    return stock>0 && stock<=threshold;
+  }).length;
+  const outCount = allProducts.filter(p=>Number(p.stock||0)<=0).length;
+  const invValue = allProducts.reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
+  document.getElementById('inventoryStatRow').innerHTML = `
+    <div class="stat-card"><div class="num">${totalUnits}</div><div class="label">Units in stock</div></div>
+    <div class="stat-card"><div class="num">${lowCount}</div><div class="label">Low stock items</div></div>
+    <div class="stat-card"><div class="num">${outCount}</div><div class="label">Out of stock</div></div>
+    <div class="stat-card"><div class="num">${money(invValue)}</div><div class="label">Inventory value</div></div>
+  `;
+}
+
+function renderMovements(){
+  const body = document.getElementById('adminMovementBody');
+  if(!body) return;
+  const moves = window._movements||[];
+  if(moves.length===0){
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--plum-soft); padding:40px;">No stock activity yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = moves.map(m=>{
+    const date = m.createdAt && m.createdAt.toDate ? m.createdAt.toDate().toLocaleString() : '—';
+    const changeLabel = m.qtyChange>=0 ? `+${m.qtyChange}` : `${m.qtyChange}`;
+    const changeColor = m.qtyChange>=0 ? '#2c6e49' : '#a13333';
+    return `
+    <tr>
+      <td>${m.productName||'—'}</td>
+      <td style="color:${changeColor}; font-weight:700;">${changeLabel}</td>
+      <td>${m.reason||'—'}</td>
+      <td>${m.resultingStock!=null ? m.resultingStock : '—'}</td>
+      <td>${date}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ============================================================
+// ADD / EDIT PRODUCT MODAL
+// ============================================================
+function openEditModal(id){
+  editingProductId = id || null;
+  const p = id ? allProducts.find(x=>x.id===id) : null;
+  document.getElementById('editModalTitle').textContent = id ? 'Edit product' : 'Add product';
+  document.getElementById('editName').value = p ? p.name||'' : '';
+  document.getElementById('editCategory').value = p ? p.category||'' : '';
+  document.getElementById('editUnit').value = p ? p.unit||'' : '';
+  document.getElementById('editPrice').value = p ? p.price||'' : '';
+  document.getElementById('editCompareAtPrice').value = p && p.compareAtPrice ? p.compareAtPrice : '';
+  document.getElementById('editStock').value = p ? p.stock||0 : '';
+  document.getElementById('editLowStock').value = p ? (p.lowStock!=null ? p.lowStock : 5) : 5;
+  document.getElementById('editFeatured').value = p && p.featured ? 'true' : 'false';
+  document.getElementById('editImage').value = p ? p.imageUrl||'' : '';
+  document.getElementById('editDescription').value = p ? p.description||'' : '';
+  document.getElementById('editMsg').innerHTML = '';
+  document.getElementById('editModalOverlay').classList.add('show');
+}
+document.getElementById('addProductBtn').addEventListener('click', ()=>openEditModal(null));
+document.getElementById('editCloseBtn').addEventListener('click', ()=>{
+  document.getElementById('editModalOverlay').classList.remove('show');
+});
+
+document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('editName').value.trim();
+  const category = document.getElementById('editCategory').value.trim();
+  const unit = document.getElementById('editUnit').value.trim();
+  const price = parseFloat(document.getElementById('editPrice').value) || 0;
+  const compareAtPriceRaw = document.getElementById('editCompareAtPrice').value.trim();
+  const compareAtPrice = compareAtPriceRaw ? parseFloat(compareAtPriceRaw) : null;
+  const stock = parseInt(document.getElementById('editStock').value) || 0;
+  const featured = document.getElementById('editFeatured').value === 'true';
+  const imageUrl = document.getElementById('editImage').value.trim();
+  const description = document.getElementById('editDescription').value.trim();
+  const msg = document.getElementById('editMsg');
+
+  if(!name || !price){
+    msg.innerHTML = '<div class="form-msg err">Product name and price are required.</div>';
+    return;
+  }
+  const lowStock = parseInt(document.getElementById('editLowStock').value) || 5;
+  const data = { name, category, unit, price, compareAtPrice, stock, lowStock, featured, imageUrl, description };
+  try{
+    if(editingProductId){
+      await db.collection('products').doc(editingProductId).update(data);
+      toast('Product updated');
+    } else {
+      data.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      await db.collection('products').add(data);
+      toast('Product added');
+    }
+    document.getElementById('editModalOverlay').classList.remove('show');
+  }catch(err){
+    msg.innerHTML = `<div class="form-msg err">${err.message}</div>`;
+  }
+});
+
+// ============================================================
+// ORDERS
+// ============================================================
+function listenOrders(){
+  db.collection('orders').orderBy('createdAt','desc').onSnapshot(snap=>{
+    window._orders = [];
+    snap.forEach(doc=> window._orders.push({id:doc.id, ...doc.data()}));
+    renderAdminOrders();
+    renderSalesDashboard();
+  }, err=>console.error(err));
+}
+const ORDER_STATUSES = ['new','confirmed','processing','shipped','done','cancelled'];
+const ORDER_STATUS_LABELS = {new:'New', confirmed:'Confirmed', processing:'Processing', shipped:'Shipped', done:'Fulfilled', cancelled:'Cancelled'};
+
+function renderAdminOrders(){
+  const body = document.getElementById('adminOrderBody');
+  if(!body) return;
+  let orders = window._orders || [];
+  if(orders.length===0){
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders yet.</td></tr>`;
+    return;
+  }
+  if(adminSearchTerm){
+    orders = orders.filter(o=>(o.customerName||'').toLowerCase().includes(adminSearchTerm) || (o.phone||'').toLowerCase().includes(adminSearchTerm));
+  }
+  if(orders.length===0){
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders match "${adminSearchTerm}".</td></tr>`;
+    return;
+  }
+  body.innerHTML = orders.map(o=>{
+    const itemSummary = (o.items||[]).map(i=>`${i.qty}× ${i.name}`).join(', ');
+    const date = o.createdAt && o.createdAt.toDate ? o.createdAt.toDate().toLocaleDateString() : '—';
+    const status = o.status || 'new';
+    const options = ORDER_STATUSES.map(s=>`<option value="${s}" ${s===status?'selected':''}>${ORDER_STATUS_LABELS[s]}</option>`).join('');
+    const payStatus = o.paymentStatus || (o.paymentMethod ? 'submitted' : 'unpaid');
+    const payLabel = payStatus==='verified' ? 'Verified' : (payStatus==='submitted' ? 'Submitted' : 'No payment info');
+    const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : '—');
+    return `
+    <tr>
+      <td><strong>${o.customerName||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${o.phone||''}</span></td>
+      <td style="max-width:220px;">${itemSummary}</td>
+      <td>${money(o.total)}</td>
+      <td>
+        <span class="pill pay-${payStatus}">${payLabel}</span><br>
+        <span style="font-size:11.5px; color:var(--plum-soft);">${methodLabel}${o.paymentReference ? ' · Ref: '+o.paymentReference : ''}</span><br>
+        ${payStatus!=='verified' && o.paymentMethod ? `<button class="icon-btn" style="margin-top:4px;" onclick="verifyPayment('${o.id}')">Mark verified</button>` : ''}
+      </td>
+      <td>
+        <select class="order-status-select" onchange="changeOrderStatus('${o.id}', this.value)">${options}</select>
+      </td>
+      <td>${date}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function verifyPayment(id){
+  if(!confirm('Confirm you have checked this reference number in your GCash/bank app and the amount matches?')) return;
+  try{
+    await db.collection('orders').doc(id).update({
+      paymentStatus:'verified', paymentVerifiedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast('Payment marked as verified');
+  }catch(err){ alert(err.message); }
+}
+
+// Handles any status change from the dropdown. Stock is only ever deducted
+// the FIRST time an order transitions into "done" (fulfilled) — flipping the
+// dropdown back and forth afterwards will not double-deduct stock.
+async function changeOrderStatus(id, newStatus){
+  const order = (window._orders||[]).find(o=>o.id===id);
+  if(!order) return;
+  const wasFulfilled = order.status === 'done';
+  if(newStatus === 'done' && !wasFulfilled && order.paymentStatus !== 'verified'){
+    if(!confirm('Payment for this order has not been marked verified yet. Fulfill it anyway?')) return;
+  }
+  try{
+    if(newStatus === 'done' && !wasFulfilled){
+      for(const item of (order.items||[])){
+        await adjustStock(item.productId, -Math.abs(item.qty), `Order fulfilled — ${order.customerName||'customer'}`);
+      }
+      await db.collection('orders').doc(id).update({
+        status:'done', fulfilledAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      toast('Order marked as fulfilled and stock updated');
+    } else {
+      await db.collection('orders').doc(id).update({ status:newStatus });
+      toast(`Order status set to ${ORDER_STATUS_LABELS[newStatus]}`);
+    }
+  }catch(err){ alert(err.message); }
+}
+
+// ============================================================
+// SALES DASHBOARD
+// ============================================================
+function renderSalesDashboard(){
+  const salesRow = document.getElementById('salesStatRow');
+  if(!salesRow) return;
+  const orders = (window._orders||[]).filter(o=>o.status==='done');
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday); startOfWeek.setDate(startOfWeek.getDate()-startOfToday.getDay());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  function within(o, start){
+    const d = o.fulfilledAt && o.fulfilledAt.toDate ? o.fulfilledAt.toDate() : (o.createdAt && o.createdAt.toDate ? o.createdAt.toDate() : null);
+    return d && d >= start;
+  }
+  const revToday = orders.filter(o=>within(o,startOfToday)).reduce((s,o)=>s+Number(o.total||0),0);
+  const revWeek = orders.filter(o=>within(o,startOfWeek)).reduce((s,o)=>s+Number(o.total||0),0);
+  const revMonth = orders.filter(o=>within(o,startOfMonth)).reduce((s,o)=>s+Number(o.total||0),0);
+  const revAll = orders.reduce((s,o)=>s+Number(o.total||0),0);
+  const avgOrder = orders.length ? revAll/orders.length : 0;
+
+  salesRow.innerHTML = `
+    <div class="stat-card"><div class="num">${money(revToday)}</div><div class="label">Revenue today</div></div>
+    <div class="stat-card"><div class="num">${money(revWeek)}</div><div class="label">This week</div></div>
+    <div class="stat-card"><div class="num">${money(revMonth)}</div><div class="label">This month</div></div>
+    <div class="stat-card"><div class="num">${money(revAll)}</div><div class="label">All-time revenue</div></div>
+    <div class="stat-card"><div class="num">${orders.length}</div><div class="label">Fulfilled orders</div></div>
+    <div class="stat-card"><div class="num">${money(avgOrder)}</div><div class="label">Avg. order value</div></div>
+  `;
+
+  const body = document.getElementById('adminSalesBody');
+  if(orders.length===0){
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--plum-soft); padding:40px;">No completed sales yet.</td></tr>`;
+  } else {
+    body.innerHTML = orders.slice(0,30).map(o=>{
+      const itemSummary = (o.items||[]).map(i=>`${i.qty}× ${i.name}`).join(', ');
+      const date = o.fulfilledAt && o.fulfilledAt.toDate ? o.fulfilledAt.toDate().toLocaleDateString() : '—';
+      return `
+      <tr>
+        <td><strong>${o.customerName||'—'}</strong></td>
+        <td style="max-width:220px;">${itemSummary}</td>
+        <td>${money(o.total)}</td>
+        <td>${date}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  const tally = {};
+  orders.forEach(o=>{
+    (o.items||[]).forEach(i=>{
+      tally[i.name] = (tally[i.name]||0) + Number(i.qty||0);
+    });
+  });
+  const ranked = Object.entries(tally).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const maxQty = ranked.length ? ranked[0][1] : 1;
+  const list = document.getElementById('topSellersList');
+  if(ranked.length===0){
+    list.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No sales data yet.</p>`;
+  } else {
+    list.innerHTML = ranked.map(([name,qty])=>`
+      <div class="seller-row">
+        <div class="seller-row-top"><span>${name}</span><strong>${qty} sold</strong></div>
+        <div class="seller-bar-track"><div class="seller-bar-fill" style="width:${(qty/maxQty*100).toFixed(0)}%"></div></div>
+      </div>
+    `).join('');
+  }
+}
+
+// ============================================================
+// SETTINGS
+// ============================================================
+let marqueeMessages = [];
+let testimonials = [];
+
+function renderMarqueeList(){
+  const wrap = document.getElementById('marqueeList');
+  if(marqueeMessages.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No messages yet — add one below.</p>`;
+  } else {
+    wrap.innerHTML = marqueeMessages.map((msg,i)=>`
+      <div class="repeat-row">
+        <div class="field"><label>Message ${i+1}</label><input type="text" class="marquee-input" data-i="${i}" value="${(msg||'').replace(/"/g,'&quot;')}"></div>
+        <button type="button" class="remove-row-btn" onclick="removeMarqueeMsg(${i})">Remove</button>
+      </div>`).join('');
+  }
+  wrap.querySelectorAll('.marquee-input').forEach(inp=>{
+    inp.addEventListener('input', ()=>{ marqueeMessages[Number(inp.dataset.i)] = inp.value; });
+  });
+}
+function removeMarqueeMsg(i){ marqueeMessages.splice(i,1); renderMarqueeList(); }
+document.getElementById('addMarqueeBtn').addEventListener('click', ()=>{
+  marqueeMessages.push('');
+  renderMarqueeList();
+});
+
+function renderTestimonialList(){
+  const wrap = document.getElementById('testimonialList');
+  if(testimonials.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No testimonials yet — add one below.</p>`;
+  } else {
+    wrap.innerHTML = testimonials.map((t,i)=>`
+      <div class="repeat-row" style="flex-wrap:wrap;">
+        <div class="field" style="min-width:140px;"><label>Name</label><input type="text" class="test-name" data-i="${i}" value="${(t.name||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field" style="min-width:140px;"><label>Meta (e.g. "Verified order")</label><input type="text" class="test-meta" data-i="${i}" value="${(t.meta||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field" style="flex-basis:100%;"><label>Quote</label><textarea class="test-quote" data-i="${i}">${t.quote||''}</textarea></div>
+        <button type="button" class="remove-row-btn" onclick="removeTestimonial(${i})">Remove</button>
+      </div>`).join('');
+  }
+  wrap.querySelectorAll('.test-name').forEach(inp=>inp.addEventListener('input', ()=>{ testimonials[Number(inp.dataset.i)].name = inp.value; }));
+  wrap.querySelectorAll('.test-meta').forEach(inp=>inp.addEventListener('input', ()=>{ testimonials[Number(inp.dataset.i)].meta = inp.value; }));
+  wrap.querySelectorAll('.test-quote').forEach(inp=>inp.addEventListener('input', ()=>{ testimonials[Number(inp.dataset.i)].quote = inp.value; }));
+}
+function removeTestimonial(i){ testimonials.splice(i,1); renderTestimonialList(); }
+document.getElementById('addTestimonialBtn').addEventListener('click', ()=>{
+  testimonials.push({name:'', meta:'Verified order', quote:''});
+  renderTestimonialList();
+});
+
+async function loadSettingsIntoForm(){
+  try{
+    const doc = await db.collection('settings').doc('site').get();
+    const s = doc.exists ? doc.data() : {};
+    document.getElementById('setStoreName').value = s.storeName || 'Bloomé by KJ';
+    document.getElementById('setContactEmail').value = s.contactEmail || 'hello@bloomebykj.co';
+    document.getElementById('setResponseTime').value = s.responseTime || 'Usually within a day';
+    document.getElementById('setFooterTagline').value = s.footerTagline || 'A small, careful shop for peptide-based skincare. Built with honesty about ingredients and stock.';
+    document.getElementById('setHeroLine1').value = s.heroLine1 || 'Skin biology,';
+    document.getElementById('setHeroLine2').value = s.heroLine2 || 'refined';
+    document.getElementById('setHeroLede').value = s.heroLede || "Peptide-driven formulas built around ingredients like GHK-Cu, sourced carefully and presented plainly — so you know exactly what you're getting.";
+    document.getElementById('setHeroImage').value = s.heroImage || '';
+    document.getElementById('setGcashName').value = s.gcashName || '';
+    document.getElementById('setGcashNumber').value = s.gcashNumber || '';
+    document.getElementById('setGcashQR').value = s.gcashQR || '';
+    document.getElementById('setBankName').value = s.bankName || '';
+    document.getElementById('setBankAccountName').value = s.bankAccountName || '';
+    document.getElementById('setBankAccountNumber').value = s.bankAccountNumber || '';
+    document.getElementById('setBankQR').value = s.bankQR || '';
+    marqueeMessages = Array.isArray(s.marqueeMessages) && s.marqueeMessages.length ? s.marqueeMessages.slice() : [
+      'Free shipping on orders over ₱3,000',
+      'Same-day dispatch on weekday orders before 3PM',
+      'New batch restocked weekly'
+    ];
+    testimonials = Array.isArray(s.testimonials) && s.testimonials.length ? s.testimonials.slice() : [
+      {name:'M. Cruz', meta:'Verified order', quote:'Ordering was straightforward and the stock count was accurate — what I saw online was what actually arrived.'},
+      {name:'R. Santos', meta:'Verified order', quote:'Appreciated the plain, factual listings instead of exaggerated claims. Made the choice a lot easier.'},
+      {name:'J. Dela Cruz', meta:'Verified order', quote:'Quick replies whenever I had a question before ordering. Felt like an actual person on the other end.'}
+    ];
+    renderMarqueeList();
+    renderTestimonialList();
+  }catch(err){ console.error(err); }
+}
+document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
+  const data = {
+    storeName: document.getElementById('setStoreName').value.trim(),
+    contactEmail: document.getElementById('setContactEmail').value.trim(),
+    responseTime: document.getElementById('setResponseTime').value.trim(),
+    footerTagline: document.getElementById('setFooterTagline').value.trim(),
+    heroLine1: document.getElementById('setHeroLine1').value.trim(),
+    heroLine2: document.getElementById('setHeroLine2').value.trim(),
+    heroLede: document.getElementById('setHeroLede').value.trim(),
+    heroImage: document.getElementById('setHeroImage').value.trim(),
+    gcashName: document.getElementById('setGcashName').value.trim(),
+    gcashNumber: document.getElementById('setGcashNumber').value.trim(),
+    gcashQR: document.getElementById('setGcashQR').value.trim(),
+    bankName: document.getElementById('setBankName').value.trim(),
+    bankAccountName: document.getElementById('setBankAccountName').value.trim(),
+    bankAccountNumber: document.getElementById('setBankAccountNumber').value.trim(),
+    bankQR: document.getElementById('setBankQR').value.trim(),
+    marqueeMessages: marqueeMessages.map(m=>m.trim()).filter(Boolean),
+    testimonials: testimonials.filter(t=>t.name.trim() && t.quote.trim()),
+  };
+  try{
+    await db.collection('settings').doc('site').set(data, {merge:true});
+    document.getElementById('settingsMsg').innerHTML = '<div class="form-msg ok">Saved — index.html picks these up automatically on next load.</div>';
+  }catch(err){
+    document.getElementById('settingsMsg').innerHTML = `<div class="form-msg err">${err.message}</div>`;
+  }
+});
+
+// ============================================================
+// USERS
+// ============================================================
+let allUsers = [];
+function listenUsers(){
+  db.collection('users').orderBy('createdAt','desc').onSnapshot(snap=>{
+    allUsers = [];
+    snap.forEach(doc=> allUsers.push({id:doc.id, ...doc.data()}));
+    renderUsers();
+  }, err=>console.error(err));
+}
+function renderUsers(){
+  const body = document.getElementById('adminUserBody');
+  if(!body) return;
+  if(allUsers.length===0){
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--plum-soft); padding:40px;">No users yet.</td></tr>`;
+    return;
+  }
+  const myUid = auth.currentUser ? auth.currentUser.uid : null;
+  body.innerHTML = allUsers.map(u=>{
+    const role = u.role || 'customer';
+    const initial = (u.name || u.email || '?').charAt(0).toUpperCase();
+    const date = u.createdAt && u.createdAt.toDate ? u.createdAt.toDate().toLocaleDateString() : '—';
+    const isSelf = u.id === myUid;
+    return `
+    <tr>
+      <td><span class="user-avatar-sm">${initial}</span><strong>${u.name || '—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${u.email||''}</span></td>
+      <td><span class="pill role-${role}">${role}</span></td>
+      <td>${date}</td>
+      <td>
+        ${isSelf
+          ? '<span style="color:var(--plum-soft); font-size:12px;">This is you</span>'
+          : (role === 'admin'
+            ? `<button class="icon-btn danger" onclick="demoteUser('${u.id}')">Demote to customer</button>`
+            : `<button class="icon-btn" onclick="promoteUser('${u.id}')">Promote to admin</button>`)}
+      </td>
+    </tr>`;
+  }).join('');
+}
+async function promoteUser(uid){
+  if(!confirm('Give this account full admin access to the store?')) return;
+  try{ await db.collection('users').doc(uid).update({role:'admin'}); toast('Account promoted to admin'); }
+  catch(err){ alert(err.message); }
+}
+async function demoteUser(uid){
+  if(!confirm('Remove admin access from this account?')) return;
+  try{ await db.collection('users').doc(uid).update({role:'customer'}); toast('Account moved back to customer'); }
+  catch(err){ alert(err.message); }
+}

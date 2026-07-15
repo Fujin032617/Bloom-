@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Bloomé by KJ</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  #authGate{ min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg-alt); color:var(--plum-soft); }
+</style>
+</head>
+<body>
+
+<div id="authGate"><p>Checking your admin access…</p></div>
+
+  <div id="adminDashboard" class="admin-shell" style="display:none;">
+    <div class="admin-side">
+      <div class="admin-brand"><img src="logo.webp" alt="Bloomé by KJ" style="width:100%; max-width:150px; height:auto; display:block; filter:brightness(0) invert(1);"></div>
+      <button class="admin-nav-btn active" data-panel="panelProducts">🧴 Products</button>
+      <button class="admin-nav-btn" data-panel="panelOrders">📦 Orders</button>
+      <button class="admin-nav-btn" data-panel="panelInventory">📊 Inventory</button>
+      <button class="admin-nav-btn" data-panel="panelSales">💰 Sales</button>
+      <button class="admin-nav-btn" data-panel="panelUsers">👤 Users</button>
+      <button class="admin-nav-btn" data-panel="panelSettings">⚙️ Site settings</button>
+      <button class="admin-nav-btn signout" id="signOutBtn">↩ Sign out</button>
+    </div>
+    <div class="admin-main">
+
+      <div class="admin-topbar">
+        <div class="admin-search">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" id="adminSearchInput" placeholder="Search products or orders…" autocomplete="off">
+        </div>
+        <div class="admin-topbar-right">
+          <a href="index.html" class="view-store-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
+            View store
+          </a>
+          <div class="admin-avatar" id="adminAvatar" title="Signed in">A</div>
+        </div>
+      </div>
+
+      <div id="panelProducts" class="admin-panel">
+        <div class="admin-top">
+          <h2>Products</h2>
+          <button class="add-product-btn" id="addProductBtn">+ Add product</button>
+        </div>
+        <div class="stat-row" id="statRow"></div>
+        <div class="bulk-bar" id="bulkBar" style="display:none;">
+          <span id="bulkCountLabel">0 selected</span>
+          <button class="icon-btn" id="bulkFeatureBtn">★ Mark featured</button>
+          <button class="icon-btn" id="bulkUnfeatureBtn">☆ Remove featured</button>
+          <button class="icon-btn" id="bulkDiscountBtn">% Apply discount</button>
+          <button class="icon-btn danger" id="bulkDeleteBtn">Delete selected</button>
+          <button class="icon-btn" id="bulkClearBtn" style="margin-left:auto;">Clear</button>
+        </div>
+        <div class="admin-table-wrap">
+          <table>
+            <thead><tr><th style="width:34px;"><input type="checkbox" id="selectAllProducts"></th><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Featured</th><th>Actions</th></tr></thead>
+            <tbody id="adminProductBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panelOrders" class="admin-panel" style="display:none;">
+        <div class="admin-top"><h2>Orders</h2></div>
+        <div class="admin-table-wrap">
+          <table>
+            <thead><tr><th>Customer</th><th>Items</th><th>Total</th><th>Payment</th><th>Status</th><th>Received</th></tr></thead>
+            <tbody id="adminOrderBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panelInventory" class="admin-panel" style="display:none;">
+        <div class="admin-top">
+          <h2>Inventory</h2>
+          <div style="font-size:12.5px; color:var(--plum-soft);">Stock updates automatically when an order is marked fulfilled.</div>
+        </div>
+        <div class="stat-row" id="inventoryStatRow"></div>
+        <div class="admin-table-wrap" style="margin-bottom:26px;">
+          <table>
+            <thead><tr><th>Product</th><th>Current stock</th><th>Low stock alert at</th><th>Status</th><th>Quick adjust</th></tr></thead>
+            <tbody id="adminInventoryBody"></tbody>
+          </table>
+        </div>
+        <div class="admin-top"><h2 style="font-size:20px;">Recent stock activity</h2></div>
+        <div class="admin-table-wrap">
+          <table>
+            <thead><tr><th>Product</th><th>Change</th><th>Reason</th><th>Resulting stock</th><th>When</th></tr></thead>
+            <tbody id="adminMovementBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panelSales" class="admin-panel" style="display:none;">
+        <div class="admin-top"><h2>Sales</h2></div>
+        <div class="stat-row" id="salesStatRow"></div>
+        <div style="display:grid; grid-template-columns:1.2fr 1fr; gap:22px; align-items:start;">
+          <div class="admin-table-wrap">
+            <table>
+              <thead><tr><th>Customer</th><th>Items</th><th>Total</th><th>Fulfilled</th></tr></thead>
+              <tbody id="adminSalesBody"></tbody>
+            </table>
+          </div>
+          <div class="admin-table-wrap" style="padding:22px;">
+            <h3 style="font-family:'Fraunces',serif; font-weight:500; margin-top:0; font-size:16px;">Top sellers</h3>
+            <div id="topSellersList"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="panelUsers" class="admin-panel" style="display:none;">
+        <div class="admin-top">
+          <h2>Users</h2>
+          <div style="font-size:12.5px; color:var(--plum-soft);">Promote a customer to admin, or demote an admin back to customer.</div>
+        </div>
+        <div class="admin-table-wrap">
+          <table>
+            <thead><tr><th>Name / Email</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead>
+            <tbody id="adminUserBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panelSettings" class="admin-panel" style="display:none;">
+        <div class="admin-top"><h2>Site settings</h2></div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Store basics</h3>
+          <div class="two-col">
+            <div class="field"><label>Store name</label><input type="text" id="setStoreName"></div>
+            <div class="field"><label>Contact email</label><input type="email" id="setContactEmail"></div>
+          </div>
+          <div class="two-col">
+            <div class="field"><label>Support response time</label><input type="text" id="setResponseTime" placeholder="e.g. Usually within a day"></div>
+            <div class="field"><label>Footer tagline</label><input type="text" id="setFooterTagline" placeholder="A small, careful shop for..."></div>
+          </div>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Homepage hero</h3>
+          <div class="two-col">
+            <div class="field"><label>Headline (first line)</label><input type="text" id="setHeroLine1"></div>
+            <div class="field"><label>Headline (emphasized word/phrase)</label><input type="text" id="setHeroLine2"></div>
+          </div>
+          <div class="field"><label>Hero paragraph</label><textarea id="setHeroLede"></textarea></div>
+          <div class="field"><label>Hero image URL</label><input type="text" id="setHeroImage" placeholder="https://..."></div>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Marquee announcement bar</h3>
+          <div id="marqueeList"></div>
+          <button class="icon-btn" id="addMarqueeBtn" type="button">+ Add message</button>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Testimonials</h3>
+          <div id="testimonialList"></div>
+          <button class="icon-btn" id="addTestimonialBtn" type="button">+ Add testimonial</button>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Payment methods (shown at checkout)</h3>
+          <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 18px;">Customers will scan the QR or use these details to pay, then type in a reference number. You verify payment manually from the Orders tab.</div>
+          <h4 style="font-size:13.5px; margin:0 0 10px;">GCash</h4>
+          <div class="two-col">
+            <div class="field"><label>GCash account name</label><input type="text" id="setGcashName" placeholder="e.g. Kristine J."></div>
+            <div class="field"><label>GCash number</label><input type="text" id="setGcashNumber" placeholder="09xx xxx xxxx"></div>
+          </div>
+          <div class="field"><label>GCash QR code image URL</label><input type="text" id="setGcashQR" placeholder="https://..."></div>
+          <h4 style="font-size:13.5px; margin:20px 0 10px;">Bank transfer / InstaPay</h4>
+          <div class="two-col">
+            <div class="field"><label>Bank name</label><input type="text" id="setBankName" placeholder="e.g. BPI, BDO"></div>
+            <div class="field"><label>Account name</label><input type="text" id="setBankAccountName" placeholder="e.g. Kristine J."></div>
+          </div>
+          <div class="field"><label>Account number</label><input type="text" id="setBankAccountNumber" placeholder="0000 0000 0000"></div>
+          <div class="field"><label>Bank/InstaPay QR code image URL (optional)</label><input type="text" id="setBankQR" placeholder="https://..."></div>
+        </div>
+
+        <button class="add-product-btn" id="saveSettingsBtn">Save settings</button>
+        <div id="settingsMsg"></div>
+      </div>
+
+    </div>
+  </div>
+
+<!-- product edit modal -->
+<div class="modal-overlay" id="editModalOverlay">
+  <div class="modal">
+    <button class="close-x" id="editCloseBtn">✕</button>
+    <h2 id="editModalTitle" style="font-weight:500; margin-top:0;">Add product</h2>
+    <div class="field"><label>Product name</label><input type="text" id="editName" placeholder="e.g. GHK-Cu Serum 10ml"></div>
+    <div class="two-col">
+      <div class="field"><label>Category</label><input type="text" id="editCategory" placeholder="e.g. Peptides"></div>
+      <div class="field"><label>Unit / variant</label><input type="text" id="editUnit" placeholder="e.g. 10mL / vial"></div>
+    </div>
+    <div class="two-col">
+      <div class="field"><label>Price (₱)</label><input type="number" id="editPrice" placeholder="0.00"></div>
+      <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale"></div>
+    </div>
+    <div class="two-col">
+      <div class="field"><label>Stock quantity</label><input type="number" id="editStock" placeholder="0"></div>
+      <div class="field"><label>Low stock alert at</label><input type="number" id="editLowStock" placeholder="5"></div>
+    </div>
+    <div class="field"><label>Show "Bestseller" badge?</label>
+      <select id="editFeatured"><option value="false">No</option><option value="true">Yes</option></select>
+    </div>
+    <div class="field"><label>Image URL</label><input type="text" id="editImage" placeholder="https://..."></div>
+    <div class="field"><label>Description</label><textarea id="editDescription" placeholder="Short, factual description"></textarea></div>
+    <button class="full-btn" id="saveProductBtn">Save product</button>
+    <div id="editMsg"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — Bloomé by KJ</title>
+
+<!--
+=====================================================================
+ SETUP INSTRUCTIONS (read me first)
+=====================================================================
+1. Create a Firebase project at https://console.firebase.google.com
+2. Enable "Firestore Database" (start in production mode).
+3. Enable "Authentication" -> Sign-in method -> Email/Password.
+4. Paste your Firebase config into firebase-config.js (all pages share
+   that one file).
+5. In Firestore -> Rules, paste this (then Publish):
+
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       function isAdmin() {
+         return request.auth != null &&
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+       }
+       match /users/{userId} {
+         allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+         allow create: if request.auth != null && request.auth.uid == userId;
+         // Admins can change OTHER users' role (used by the Users tab in
+         // admin.html) but can never edit their own document — this stops
+         // an admin from accidentally demoting/locking out themselves.
+         // Signed-in users may update their OWN doc too, but only to flip
+         // emailVerified — that's what the code-verification step needs.
+         allow update: if (isAdmin() && request.auth.uid != userId) ||
+           (request.auth != null && request.auth.uid == userId &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emailVerified']));
+       }
+       match /products/{productId} {
+         allow read: if true;
+         allow write: if isAdmin();
+       }
+       match /orders/{orderId} {
+         allow create: if true;
+         allow read, update, delete: if isAdmin();
+       }
+       match /stockMovements/{moveId} {
+         allow read, write: if isAdmin();
+       }
+       match /settings/{docId} {
+         allow read: if true;
+         allow write: if isAdmin();
+       }
+       match /emailVerifications/{uid} {
+         // Only the signed-in owner of this code can read/write it, and
+         // only right after they create their account (uid must match).
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+
+   Note: this is stricter than before — only accounts with role "admin"
+   can write products/orders/settings now (previously any signed-in
+   customer technically could, if they crafted the request by hand).
+
+6. Anyone who signs up on this page becomes a "customer" automatically.
+   The FIRST admin has to be promoted by hand: sign up normally, then in
+   Firestore -> "users" collection, open that document and change role
+   from "customer" to "admin". After that, admins can promote or demote
+   anyone else right from the Users tab in admin.html.
+
+7. EMAIL VERIFICATION CODE SETUP (no backend/cloud function needed):
+   a. Create a free account at https://www.emailjs.com
+   b. Email Services -> Add New Service -> connect Gmail/Outlook/etc.
+      -> copy the Service ID.
+   c. Email Templates -> Create New Template. Give it these variables
+      (use them in the template's Content/HTML): {{to_name}}, {{to_email}},
+      {{code}}. Set the "To email" field of the template to {{to_email}}.
+      Design it to look like the verification-code email you want to
+      send (add your logo image — it must be hosted at a public URL,
+      e.g. the same domain this site is hosted on, like
+      https://yourdomain.com/logo.webp — image attachments/local files
+      won't work in an email). Copy the Template ID.
+   d. Account -> General -> copy your Public Key.
+   e. Paste all three values into firebase-config.js where marked
+      (EMAILJS_PUBLIC_KEY, EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID).
+   f. That's it — no server, no cloud function. The browser calls
+      EmailJS directly to send the code.
+=====================================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+
+<style>
+  body{ display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .login-wrap{ display:flex; align-items:center; justify-content:center; min-height:100vh; width:100%; padding:20px; }
+  .login-card{background:#fff; border-radius:24px; padding:44px; width:100%; max-width:400px; box-shadow:0 20px 60px rgba(58,39,64,0.2); text-align:center;}
+  .login-card h2{font-family:'Fraunces',serif; margin:14px 0 6px; font-weight:500;}
+  .login-card p.sub{color:var(--plum-soft); font-size:13.5px; margin:0 0 26px;}
+  .login-logo{width:130px; max-width:60%;}
+  .mode-toggle{display:flex; gap:8px; background:var(--bg-alt); border-radius:999px; padding:4px; margin-bottom:24px;}
+  .mode-btn{flex:1; border:none; background:none; padding:10px; border-radius:999px; font-weight:700; font-size:13px; cursor:pointer; color:var(--plum-soft);}
+  .mode-btn.active{background:var(--plum); color:#fff;}
+  .field{text-align:left;}
+</style>
+</head>
+<body>
+
+<div class="login-wrap">
+  <div class="login-card glass">
+    <img class="login-logo" src="logo.webp" alt="Bloomé by KJ">
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="modeSignIn">Sign in</button>
+      <button class="mode-btn" id="modeSignUp">Create account</button>
+    </div>
+
+    <h2 id="formTitle">Welcome back</h2>
+    <p class="sub" id="formSub">Sign in to shop or manage your store.</p>
+
+    <div class="field" id="nameField" style="display:none;">
+      <label>Full name</label>
+      <input type="text" id="authName" placeholder="Jane Dela Cruz">
+    </div>
+    <div class="field"><label>Email</label><input type="email" id="authEmail" placeholder="you@email.com"></div>
+    <div class="field" id="passwordField">
+      <label>Password</label>
+      <input type="password" id="authPassword" placeholder="••••••••">
+    </div>
+    <p id="forgotPasswordLink" style="text-align:right; margin:-6px 0 16px;">
+      <a href="#" id="forgotPasswordBtn" style="font-size:12.5px; color:var(--plum-soft); font-weight:700;">Forgot password?</a>
+    </p>
+
+    <div class="field" id="codeField" style="display:none;">
+      <label>6-digit code</label>
+      <input type="text" id="authCode" inputmode="numeric" maxlength="6" placeholder="123456" style="letter-spacing:6px; font-size:20px; text-align:center; font-weight:700;">
+    </div>
+    <p id="resendCodeLink" style="text-align:right; margin:-6px 0 16px; display:none;">
+      <a href="#" id="resendCodeBtn" style="font-size:12.5px; color:var(--plum-soft); font-weight:700;">Resend code</a>
+    </p>
+
+    <button class="full-btn" id="authSubmitBtn">Sign in</button>
+    <div id="authMsg"></div>
+
+    <p style="margin-top:20px; display:none;" id="backToSignInLink"><a href="#" id="backToSignInBtn" style="font-size:12.5px; color:var(--plum-soft);">← Back to sign in</a></p>
+    <p style="margin-top:20px;" id="backHomeLink"><a href="index.html" style="font-size:12.5px; color:var(--plum-soft);">← Back to home</a></p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+<script src="firebase-config.js"></script>
+<script>
+  let mode = 'signin'; // 'signin' | 'signup' | 'reset' | 'verify'
+  let pendingUser = null; // set once we're waiting on a verification code
+
+  const modeToggle = document.querySelector('.mode-toggle');
+  const modeSignInBtn = document.getElementById('modeSignIn');
+  const modeSignUpBtn = document.getElementById('modeSignUp');
+  const nameField = document.getElementById('nameField');
+  const passwordField = document.getElementById('passwordField');
+  const forgotPasswordLink = document.getElementById('forgotPasswordLink');
+  const forgotPasswordBtn = document.getElementById('forgotPasswordBtn');
+  const formTitle = document.getElementById('formTitle');
+  const formSub = document.getElementById('formSub');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const msgBox = document.getElementById('authMsg');
+
+  function setMode(next){
+    mode = next;
+
+    // reset/verify modes hide the sign-in/sign-up toggle and the password
+    // field, and repurpose the card for their own single step.
+    const isSpecial = mode==='reset' || mode==='verify';
+    modeToggle.style.display = isSpecial ? 'none' : 'flex';
+    passwordField.style.display = isSpecial ? 'none' : 'block';
+    forgotPasswordLink.style.display = mode==='signin' ? 'block' : 'none';
+    document.getElementById('backToSignInLink').style.display = mode==='reset' ? 'block' : 'none';
+    document.getElementById('codeField').style.display = mode==='verify' ? 'block' : 'none';
+    document.getElementById('resendCodeLink').style.display = mode==='verify' ? 'block' : 'none';
+    document.getElementById('backHomeLink').style.display = mode==='verify' ? 'none' : 'block';
+    document.getElementById('nameField').style.display = mode==='signup' ? 'block' : 'none';
+    document.getElementById('authEmail').closest('.field').style.display = mode==='verify' ? 'none' : 'block';
+
+    modeSignInBtn.classList.toggle('active', mode==='signin');
+    modeSignUpBtn.classList.toggle('active', mode==='signup');
+
+    if(mode==='signup'){
+      formTitle.textContent = 'Create your account';
+      formSub.textContent = 'Sign up to start shopping.';
+      submitBtn.textContent = 'Create account';
+    } else if(mode==='reset'){
+      formTitle.textContent = 'Reset your password';
+      formSub.textContent = "Enter your email and we'll send you a link to reset it.";
+      submitBtn.textContent = 'Send reset link';
+    } else if(mode==='verify'){
+      formTitle.textContent = 'Check your email';
+      formSub.textContent = pendingUser ? `We sent a 6-digit code to ${pendingUser.email}.` : 'Enter the 6-digit code we emailed you.';
+      submitBtn.textContent = 'Verify';
+    } else {
+      formTitle.textContent = 'Welcome back';
+      formSub.textContent = 'Sign in to shop or manage your store.';
+      submitBtn.textContent = 'Sign in';
+    }
+    msgBox.innerHTML = '';
+  }
+  modeSignInBtn.addEventListener('click', ()=>setMode('signin'));
+  modeSignUpBtn.addEventListener('click', ()=>setMode('signup'));
+
+  forgotPasswordBtn.addEventListener('click', (e)=>{
+    e.preventDefault();
+    setMode('reset');
+  });
+
+  document.getElementById('backToSignInBtn').addEventListener('click', (e)=>{
+    e.preventDefault();
+    setMode('signin');
+  });
+
+  // Sends (or resends) a fresh code to whichever user is pending verification.
+  async function issueVerificationCode(){
+    if(!pendingUser) return;
+    await sendVerificationCode(pendingUser.uid, pendingUser.email, pendingUser.name);
+  }
+
+  document.getElementById('resendCodeBtn').addEventListener('click', async (e)=>{
+    e.preventDefault();
+    msgBox.innerHTML = '';
+    try{
+      await issueVerificationCode();
+      msgBox.innerHTML = '<div class="form-msg ok">New code sent — check your inbox.</div>';
+    }catch(err){
+      msgBox.innerHTML = `<div class="form-msg err">Couldn't resend right now: ${err.message||err}</div>`;
+    }
+  });
+
+  submitBtn.addEventListener('click', async ()=>{
+    const email = document.getElementById('authEmail').value.trim();
+    const password = document.getElementById('authPassword').value;
+    const name = document.getElementById('authName').value.trim();
+    msgBox.innerHTML = '';
+
+    if(mode === 'reset'){
+      if(!email){
+        msgBox.innerHTML = '<div class="form-msg err">Please enter your email.</div>';
+        return;
+      }
+      submitBtn.disabled = true;
+      try{
+        await auth.sendPasswordResetEmail(email);
+        msgBox.innerHTML = '<div class="form-msg ok">Reset link sent — check your inbox (and spam folder).</div>';
+      }catch(err){
+        // Firebase reveals whether an email exists via error codes; show a
+        // generic message instead so we don't leak which emails are registered.
+        if(err.code === 'auth/invalid-email'){
+          msgBox.innerHTML = '<div class="form-msg err">That email address looks invalid.</div>';
+        } else {
+          msgBox.innerHTML = '<div class="form-msg ok">If an account exists for that email, a reset link has been sent.</div>';
+        }
+      }
+      submitBtn.disabled = false;
+      return;
+    }
+
+    if(mode === 'verify'){
+      const enteredCode = document.getElementById('authCode').value.trim();
+      if(!pendingUser){
+        msgBox.innerHTML = '<div class="form-msg err">Session expired — please sign in again.</div>';
+        return;
+      }
+      if(!enteredCode){
+        msgBox.innerHTML = '<div class="form-msg err">Please enter the code from your email.</div>';
+        return;
+      }
+      submitBtn.disabled = true;
+      try{
+        const result = await checkVerificationCode(pendingUser.uid, enteredCode);
+        if(result.ok){
+          const role = await getUserRole(pendingUser.uid);
+          redirectForRole(role);
+          return;
+        } else if(result.reason === 'expired'){
+          msgBox.innerHTML = '<div class="form-msg err">That code expired — tap "Resend code" for a new one.</div>';
+        } else if(result.reason === 'no-code'){
+          msgBox.innerHTML = '<div class="form-msg err">No code on file — tap "Resend code".</div>';
+        } else {
+          msgBox.innerHTML = '<div class="form-msg err">That code doesn\'t match — double check and try again.</div>';
+        }
+      }catch(err){
+        msgBox.innerHTML = `<div class="form-msg err">${err.message}</div>`;
+      }
+      submitBtn.disabled = false;
+      return;
+    }
+
+    if(!email || !password){
+      msgBox.innerHTML = '<div class="form-msg err">Please enter your email and password.</div>';
+      return;
+    }
+    submitBtn.disabled = true;
+    try{
+      let userCred;
+      if(mode === 'signup'){
+        userCred = await auth.createUserWithEmailAndPassword(email, password);
+        await db.collection('users').doc(userCred.user.uid).set({
+          email, name, role: 'customer', emailVerified: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        pendingUser = { uid: userCred.user.uid, email, name };
+        await issueVerificationCode();
+        setMode('verify');
+        submitBtn.disabled = false;
+        return;
+      } else {
+        userCred = await auth.signInWithEmailAndPassword(email, password);
+      }
+      const role = await ensureUserDoc(userCred.user, 'customer');
+      const userDoc = await db.collection('users').doc(userCred.user.uid).get();
+      const verified = userDoc.exists ? userDoc.data().emailVerified !== false : true;
+      if(!verified){
+        pendingUser = { uid: userCred.user.uid, email: userCred.user.email, name: userDoc.data().name };
+        await issueVerificationCode();
+        setMode('verify');
+        submitBtn.disabled = false;
+        return;
+      }
+      redirectForRole(role);
+    }catch(err){
+      msgBox.innerHTML = `<div class="form-msg err">${err.message}</div>`;
+    }
+    submitBtn.disabled = false;
+  });
+
+  // If already signed in, skip straight to the right home page — unless
+  // they still need to verify their email, in which case show that screen.
+  auth.onAuthStateChanged(async (user)=>{
+    if(user){
+      const role = await ensureUserDoc(user, 'customer');
+      const userDoc = await db.collection('users').doc(user.uid).get();
+      const data = userDoc.exists ? userDoc.data() : {};
+      const verified = data.emailVerified !== false;
+      if(!verified){
+        pendingUser = { uid: user.uid, email: user.email, name: data.name };
+        setMode('verify');
+        // Only send a fresh code if we don't land here every reload —
+        // the user can always tap "Resend code" instead.
+        if(new URLSearchParams(window.location.search).get('verify') === '1'){
+          try{ await issueVerificationCode(); }catch(e){ /* they can resend manually */ }
+        }
+        return;
+      }
+      redirectForRole(role);
+    }
+  });
+</script>
+</body>
+</html>
