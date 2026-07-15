@@ -86,7 +86,7 @@ function renderAdminProducts(){
   const liveIds = new Set(allProducts.map(p=>p.id));
   selectedProductIds.forEach(id=>{ if(!liveIds.has(id)) selectedProductIds.delete(id); });
   if(allProducts.length===0){
-    body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet. Click "Add product" to create your first listing.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet. Click "Add product" to create your first listing.</td></tr>`;
     renderBulkBar();
     return;
   }
@@ -95,7 +95,7 @@ function renderAdminProducts(){
     rows = rows.filter(p=>(p.name||'').toLowerCase().includes(adminSearchTerm) || (p.category||'').toLowerCase().includes(adminSearchTerm));
   }
   if(rows.length===0){
-    body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--plum-soft); padding:40px;">No products match "${adminSearchTerm}".</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--plum-soft); padding:40px;">No products match "${adminSearchTerm}".</td></tr>`;
     renderBulkBar();
     return;
   }
@@ -109,18 +109,24 @@ function renderAdminProducts(){
     const price = Number(p.price||0);
     const marginPct = price>0 ? ((price-cost)/price*100) : 0;
     const marginLabel = cost>0 ? `${marginPct.toFixed(0)}%` : '—';
+    const compareAt = Number(p.compareAtPrice||0);
+    const hasDiscount = compareAt > price;
+    const discountPct = hasDiscount ? Math.round((1 - price/compareAt) * 100) : 0;
+    const discountLabel = hasDiscount ? `<span class="pill low">-${discountPct}%</span>` : '—';
     return `
     <tr>
       <td><input type="checkbox" class="product-select-box" data-id="${p.id}" ${checked}></td>
       <td><div class="row-prod"><img src="${esc(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
       <td>${esc(p.category)||'—'}</td>
       <td>${money(p.price)}</td>
+      <td>${discountLabel}</td>
       <td>${cost>0 ? money(cost) : '—'}</td>
       <td>${marginLabel}</td>
       <td><span class="pill ${pillClass}">${pillLabel}</span></td>
       <td>${p.featured ? '★ Yes' : '—'}</td>
       <td>
         <button class="icon-btn" onclick="openEditModal('${p.id}')">Edit</button>
+        ${hasDiscount ? `<button class="icon-btn" onclick="removeProductDiscount('${p.id}')">Remove discount</button>` : ''}
         <button class="icon-btn danger" onclick="deleteProduct('${p.id}')">Delete</button>
       </td>
     </tr>`;
@@ -196,6 +202,27 @@ document.getElementById('bulkDeleteBtn').addEventListener('click', async ()=>{
   selectedProductIds.clear();
   toast('Selected products deleted');
 });
+
+document.getElementById('bulkRemoveDiscountBtn').addEventListener('click', async ()=>{
+  const ids = Array.from(selectedProductIds).filter(id=>{
+    const p = allProducts.find(x=>x.id===id);
+    return p && Number(p.compareAtPrice||0) > Number(p.price||0);
+  });
+  if(ids.length===0){ toast('None of the selected products have a discount'); return; }
+  await Promise.all(ids.map(async id=>{
+    const p = allProducts.find(x=>x.id===id);
+    await db.collection('products').doc(id).update({ price: Number(p.compareAtPrice), compareAtPrice: null });
+  }));
+  toast(`Removed discount from ${ids.length} product${ids.length===1?'':'s'}`);
+});
+async function removeProductDiscount(id){
+  const p = allProducts.find(x=>x.id===id);
+  if(!p || !(Number(p.compareAtPrice||0) > Number(p.price||0))) return;
+  try{
+    await db.collection('products').doc(id).update({ price: Number(p.compareAtPrice), compareAtPrice: null });
+    toast('Discount removed');
+  }catch(err){ alert(err.message); }
+}
 
 async function deleteProduct(id){
   if(!confirm('Delete this product? This cannot be undone.')) return;
@@ -326,6 +353,7 @@ function openEditModal(id){
   document.getElementById('editUnit').value = p ? p.unit||'' : '';
   document.getElementById('editPrice').value = p ? p.price||'' : '';
   document.getElementById('editCompareAtPrice').value = p && p.compareAtPrice ? p.compareAtPrice : '';
+  document.getElementById('editDiscountPct').value = '';
   document.getElementById('editStock').value = p ? p.stock||0 : '';
   document.getElementById('editLowStock').value = p ? (p.lowStock!=null ? p.lowStock : 5) : 5;
   document.getElementById('editCostPrice').value = p && p.costPrice!=null ? p.costPrice : '';
@@ -336,11 +364,53 @@ function openEditModal(id){
     fileInputId:'editImageFile', previewId:'editImagePreview', urlFieldId:'editImage',
     progressId:'editImageProgress', folder:'products', existingUrl: p ? p.imageUrl||'' : ''
   });
+  updateDiscountPreview();
   document.getElementById('editModalOverlay').classList.add('show');
 }
 document.getElementById('addProductBtn').addEventListener('click', ()=>openEditModal(null));
 document.getElementById('editCloseBtn').addEventListener('click', ()=>{
   document.getElementById('editModalOverlay').classList.remove('show');
+});
+
+// ------------------------------------------------------------
+// Quick discount controls (inside the add/edit product modal)
+// ------------------------------------------------------------
+function updateDiscountPreview(){
+  const preview = document.getElementById('discountPreview');
+  const price = parseFloat(document.getElementById('editPrice').value) || 0;
+  const compareAt = parseFloat(document.getElementById('editCompareAtPrice').value) || 0;
+  if(compareAt > price && price > 0){
+    const pct = Math.round((1 - price/compareAt) * 100);
+    preview.textContent = `Currently ${pct}% off — was ${money(compareAt)}, now ${money(price)}.`;
+  } else {
+    preview.textContent = 'No discount applied.';
+  }
+}
+document.getElementById('editPrice').addEventListener('input', updateDiscountPreview);
+document.getElementById('editCompareAtPrice').addEventListener('input', updateDiscountPreview);
+document.getElementById('applyDiscountBtn').addEventListener('click', ()=>{
+  const pct = parseFloat(document.getElementById('editDiscountPct').value);
+  if(!pct || pct<=0 || pct>=100){ alert('Enter a percentage between 1 and 99.'); return; }
+  const priceField = document.getElementById('editPrice');
+  const compareField = document.getElementById('editCompareAtPrice');
+  // Base off the existing compare-at price if there's already one set, so
+  // re-applying a discount doesn't discount an already-discounted price.
+  const basePrice = parseFloat(compareField.value) || parseFloat(priceField.value) || 0;
+  if(basePrice<=0){ alert('Enter a selling price first.'); return; }
+  const newPrice = Math.round(basePrice * (1 - pct/100) * 100) / 100;
+  compareField.value = basePrice;
+  priceField.value = newPrice;
+  document.getElementById('editDiscountPct').value = '';
+  updateDiscountPreview();
+});
+document.getElementById('clearDiscountBtn').addEventListener('click', ()=>{
+  const priceField = document.getElementById('editPrice');
+  const compareField = document.getElementById('editCompareAtPrice');
+  const compareAt = parseFloat(compareField.value) || 0;
+  if(compareAt > 0) priceField.value = compareAt;
+  compareField.value = '';
+  document.getElementById('editDiscountPct').value = '';
+  updateDiscountPreview();
 });
 
 document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
@@ -634,9 +704,18 @@ async function loadSettingsIntoForm(){
     document.getElementById('setBankName').value = s.bankName || '';
     document.getElementById('setBankAccountName').value = s.bankAccountName || '';
     document.getElementById('setBankAccountNumber').value = s.bankAccountNumber || '';
+    document.getElementById('setPopupEnabled').value = s.popupEnabled ? 'true' : 'false';
+    document.getElementById('setPopupHeading').value = s.popupHeading || '';
+    document.getElementById('setPopupButtonLabel').value = s.popupButtonLabel || '';
+    document.getElementById('setPopupButtonLink').value = s.popupButtonLink || '';
+    document.getElementById('setPopupFrequency').value = s.popupFrequency || 'session';
+    document.getElementById('setTawkPropertyId').value = s.tawkPropertyId || '';
+    document.getElementById('setTawkWidgetId').value = s.tawkWidgetId || '';
     wireImageUpload({ fileInputId:'setHeroImageFile', previewId:'setHeroImagePreview', urlFieldId:'setHeroImage', progressId:'setHeroImageProgress', folder:'settings', existingUrl: s.heroImage||'' });
+    wireImageUpload({ fileInputId:'setAboutImageFile', previewId:'setAboutImagePreview', urlFieldId:'setAboutImage', progressId:'setAboutImageProgress', folder:'settings', existingUrl: s.aboutImage||'' });
     wireImageUpload({ fileInputId:'setGcashQRFile', previewId:'setGcashQRPreview', urlFieldId:'setGcashQR', progressId:'setGcashQRProgress', folder:'settings', existingUrl: s.gcashQR||'' });
     wireImageUpload({ fileInputId:'setBankQRFile', previewId:'setBankQRPreview', urlFieldId:'setBankQR', progressId:'setBankQRProgress', folder:'settings', existingUrl: s.bankQR||'' });
+    wireImageUpload({ fileInputId:'setPopupImageFile', previewId:'setPopupImagePreview', urlFieldId:'setPopupImage', progressId:'setPopupImageProgress', folder:'settings', existingUrl: s.popupImage||'' });
     marqueeMessages = Array.isArray(s.marqueeMessages) && s.marqueeMessages.length ? s.marqueeMessages.slice() : [
       'Free shipping on orders over ₱3,000',
       'Same-day dispatch on weekday orders before 3PM',
@@ -652,7 +731,7 @@ async function loadSettingsIntoForm(){
   }catch(err){ console.error(err); }
 }
 document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
-  const uploadingIds = ['setHeroImageProgress','setGcashQRProgress','setBankQRProgress'];
+  const uploadingIds = ['setHeroImageProgress','setAboutImageProgress','setGcashQRProgress','setBankQRProgress','setPopupImageProgress'];
   for(const id of uploadingIds){
     const el = document.getElementById(id);
     if(el && el.style.display!=='none' && el.textContent.startsWith('Uploading')){
@@ -669,6 +748,7 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
     heroLine2: document.getElementById('setHeroLine2').value.trim(),
     heroLede: document.getElementById('setHeroLede').value.trim(),
     heroImage: document.getElementById('setHeroImage').value.trim(),
+    aboutImage: document.getElementById('setAboutImage').value.trim(),
     gcashName: document.getElementById('setGcashName').value.trim(),
     gcashNumber: document.getElementById('setGcashNumber').value.trim(),
     gcashQR: document.getElementById('setGcashQR').value.trim(),
@@ -678,6 +758,14 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
     bankQR: document.getElementById('setBankQR').value.trim(),
     marqueeMessages: marqueeMessages.map(m=>m.trim()).filter(Boolean),
     testimonials: testimonials.filter(t=>t.name.trim() && t.quote.trim()),
+    popupEnabled: document.getElementById('setPopupEnabled').value === 'true',
+    popupImage: document.getElementById('setPopupImage').value.trim(),
+    popupHeading: document.getElementById('setPopupHeading').value.trim(),
+    popupButtonLabel: document.getElementById('setPopupButtonLabel').value.trim(),
+    popupButtonLink: document.getElementById('setPopupButtonLink').value.trim(),
+    popupFrequency: document.getElementById('setPopupFrequency').value,
+    tawkPropertyId: document.getElementById('setTawkPropertyId').value.trim(),
+    tawkWidgetId: document.getElementById('setTawkWidgetId').value.trim(),
   };
   try{
     await db.collection('settings').doc('site').set(data, {merge:true});

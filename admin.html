@@ -61,12 +61,13 @@
           <button class="icon-btn" id="bulkFeatureBtn">★ Mark featured</button>
           <button class="icon-btn" id="bulkUnfeatureBtn">☆ Remove featured</button>
           <button class="icon-btn" id="bulkDiscountBtn">% Apply discount</button>
+          <button class="icon-btn" id="bulkRemoveDiscountBtn">Remove discount</button>
           <button class="icon-btn danger" id="bulkDeleteBtn">Delete selected</button>
           <button class="icon-btn" id="bulkClearBtn" style="margin-left:auto;">Clear</button>
         </div>
         <div class="admin-table-wrap">
           <table>
-            <thead><tr><th style="width:34px;"><input type="checkbox" id="selectAllProducts"></th><th>Product</th><th>Category</th><th>Price</th><th>Cost</th><th>Margin</th><th>Stock</th><th>Featured</th><th>Actions</th></tr></thead>
+            <thead><tr><th style="width:34px;"><input type="checkbox" id="selectAllProducts"></th><th>Product</th><th>Category</th><th>Price</th><th>Discount</th><th>Cost</th><th>Margin</th><th>Stock</th><th>Featured</th><th>Actions</th></tr></thead>
             <tbody id="adminProductBody"></tbody>
           </table>
         </div>
@@ -167,6 +168,20 @@
         </div>
 
         <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">"Why peptides" section image</h3>
+          <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 14px;">The photo shown next to the "What's actually in the bottle" section on the homepage.</div>
+          <div class="field">
+            <label>Section image</label>
+            <div class="upload-box">
+              <img id="setAboutImagePreview" class="upload-preview" alt="" style="display:none;">
+              <input type="file" id="setAboutImageFile" accept="image/*">
+              <input type="hidden" id="setAboutImage">
+              <div class="upload-progress" id="setAboutImageProgress" style="display:none;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
           <h3 class="settings-h3">Marquee announcement bar</h3>
           <div id="marqueeList"></div>
           <button class="icon-btn" id="addMarqueeBtn" type="button">+ Add message</button>
@@ -212,6 +227,53 @@
           </div>
         </div>
 
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Homepage popup</h3>
+          <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 18px;">Shows an image popup to visitors when they land on the homepage — good for promos or announcements.</div>
+          <div class="field">
+            <label>Show popup?</label>
+            <select id="setPopupEnabled"><option value="false">No — keep it off</option><option value="true">Yes — show it</option></select>
+          </div>
+          <div class="field">
+            <label>Popup image</label>
+            <div class="upload-box">
+              <img id="setPopupImagePreview" class="upload-preview" alt="" style="display:none;">
+              <input type="file" id="setPopupImageFile" accept="image/*">
+              <input type="hidden" id="setPopupImage">
+              <div class="upload-progress" id="setPopupImageProgress" style="display:none;"></div>
+            </div>
+          </div>
+          <div class="two-col">
+            <div class="field"><label>Heading (optional)</label><input type="text" id="setPopupHeading" placeholder="e.g. 15% off this week"></div>
+            <div class="field"><label>Button label (optional)</label><input type="text" id="setPopupButtonLabel" placeholder="e.g. Shop the sale"></div>
+          </div>
+          <div class="two-col">
+            <div class="field"><label>Button link (optional)</label><input type="text" id="setPopupButtonLink" placeholder="e.g. shop.html"></div>
+            <div class="field">
+              <label>How often to show it</label>
+              <select id="setPopupFrequency">
+                <option value="session">Once per visit (browser session)</option>
+                <option value="day">Once per day</option>
+                <option value="always">Every page load</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Live chat (Tawk.to)</h3>
+          <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 18px;">
+            Adds a live chat bubble to your homepage. Create a free account at
+            <a href="https://www.tawk.to" target="_blank" rel="noopener">tawk.to</a>, then go to
+            Admin → your property → Chat Widget → Widget Settings and copy the two IDs from your
+            embed code URL: <code>embed.tawk.to/<strong>PROPERTY_ID</strong>/<strong>WIDGET_ID</strong></code>.
+          </div>
+          <div class="two-col">
+            <div class="field"><label>Tawk.to Property ID</label><input type="text" id="setTawkPropertyId" placeholder="e.g. 64f1a2b3c4d5e6f7a8b9c0d1"></div>
+            <div class="field"><label>Tawk.to Widget ID</label><input type="text" id="setTawkWidgetId" placeholder="e.g. 1h9abcd23"></div>
+          </div>
+        </div>
+
         <button class="add-product-btn" id="saveSettingsBtn">Save settings</button>
         <div id="settingsMsg"></div>
       </div>
@@ -234,6 +296,15 @@
       <div class="field"><label>Cost price (₱, what you paid)</label><input type="number" id="editCostPrice" placeholder="0.00"></div>
     </div>
     <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale"></div>
+    <div class="field discount-quick-row" style="background:var(--bg-alt); border-radius:12px; padding:12px 14px;">
+      <label style="margin-bottom:8px;">Quick discount</label>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="number" id="editDiscountPct" placeholder="% off" style="max-width:110px;">
+        <button type="button" class="icon-btn" id="applyDiscountBtn">Apply discount</button>
+        <button type="button" class="icon-btn danger" id="clearDiscountBtn">Remove discount</button>
+      </div>
+      <div style="font-size:12px; color:var(--plum-soft); margin-top:8px;" id="discountPreview">No discount applied.</div>
+    </div>
     <div class="two-col">
       <div class="field"><label>Stock quantity</label><input type="number" id="editStock" placeholder="0"></div>
       <div class="field"><label>Low stock alert at</label><input type="number" id="editLowStock" placeholder="5"></div>

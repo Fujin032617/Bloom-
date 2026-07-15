@@ -48,6 +48,27 @@ function toast(msg){
 }
 
 // ---------------------------------------------------------------------
+// TAWK.TO LIVE CHAT
+// ---------------------------------------------------------------------
+// Injects the Tawk.to chat bubble if a Property ID + Widget ID have been
+// set from admin.html -> Site settings -> "Live chat (Tawk.to)". Safe to
+// call more than once — it only ever injects the script tag once.
+let _tawkLoaded = false;
+function loadTawkWidget(propertyId, widgetId){
+  if(_tawkLoaded || !propertyId || !widgetId) return;
+  _tawkLoaded = true;
+  window.Tawk_API = window.Tawk_API || {};
+  window.Tawk_LoadStart = new Date();
+  const s1 = document.createElement('script');
+  const s0 = document.getElementsByTagName('script')[0];
+  s1.async = true;
+  s1.src = `https://embed.tawk.to/${propertyId}/${widgetId}`;
+  s1.charset = 'UTF-8';
+  s1.setAttribute('crossorigin', '*');
+  s0.parentNode.insertBefore(s1, s0);
+}
+
+// ---------------------------------------------------------------------
 // IMAGE UPLOADS (Firebase Storage)
 // ---------------------------------------------------------------------
 // Uploads a File to Storage under `folder/` and returns its public download

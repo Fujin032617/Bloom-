@@ -36,6 +36,9 @@ async function loadSiteSettings(){
   try{
     const doc = await db.collection('settings').doc('site').get();
     siteSettings = doc.exists ? doc.data() : {};
+    if(siteSettings.tawkPropertyId && siteSettings.tawkWidgetId){
+      loadTawkWidget(siteSettings.tawkPropertyId, siteSettings.tawkWidgetId);
+    }
   }catch(err){ console.error('Could not load payment settings', err); }
 }
 
