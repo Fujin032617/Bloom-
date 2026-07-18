@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Account — Bloomé by KJ</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .account-pill{
+    display:flex; align-items:center; gap:8px; background:var(--bg-alt); border-radius:999px;
+    padding:6px 14px 6px 6px; font-size:12.5px; font-weight:700; color:var(--plum);
+  }
+  .account-pill .avatar{
+    width:26px; height:26px; border-radius:50%; background:var(--plum); color:#fff;
+    display:flex; align-items:center; justify-content:center; font-size:12px; flex:none;
+  }
+  .account-pill button{ background:none; border:none; color:var(--rose-deep); font-weight:700; font-size:12px; cursor:pointer; }
+  #authGate{ min-height:100vh; display:flex; align-items:center; justify-content:center; }
+
+  .account-wrap{ max-width:1000px; margin:0 auto; padding:40px 6vw 90px; }
+  .account-tabs{ display:flex; gap:8px; background:rgba(255,255,255,0.5); border-radius:999px; padding:4px; margin-bottom:32px; max-width:360px; }
+  .account-tab{ flex:1; border:none; background:none; padding:10px; border-radius:999px; font-weight:700; font-size:13px; cursor:pointer; color:var(--plum-soft); }
+  .account-tab.active{ background:var(--plum); color:#fff; }
+  .account-card{
+    background:var(--glass-strong); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border:1px solid var(--glass-border); border-radius:18px; box-shadow:0 6px 20px rgba(58,39,64,0.08);
+    padding:26px; margin-bottom:20px;
+  }
+  .account-card h3{ font-family:'Fraunces',serif; font-weight:500; margin:0 0 18px; font-size:19px; }
+  .order-card{ padding-bottom:18px; margin-bottom:18px; border-bottom:1px dashed var(--line); }
+  .order-card:last-child{ border-bottom:none; margin-bottom:0; padding-bottom:0; }
+  .order-card-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+  .order-card-head .oid{ font-size:12px; color:var(--plum-soft); }
+  .order-card-head .odate{ font-size:12.5px; color:var(--plum-soft); }
+  .order-items-list{ margin:8px 0; padding-left:18px; font-size:13.5px; color:var(--plum); }
+  .order-pills{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .track-box{
+    background:var(--bg-alt); border-radius:12px; padding:12px 14px; margin-top:10px; font-size:13.5px;
+  }
+  .track-box .tnum{ font-weight:700; letter-spacing:0.4px; }
+  .track-steps{ display:flex; gap:6px; margin:14px 0 0; }
+  .track-steps span{ flex:1; height:5px; border-radius:999px; background:var(--line); }
+  .track-steps span.done{ background:var(--plum); }
+  .order-total-row{ display:flex; justify-content:space-between; font-size:14px; font-weight:700; margin-top:10px; }
+  .empty-orders{ text-align:center; color:var(--plum-soft); padding:30px 10px; }
+</style>
+</head>
+<body>
+
+<div id="authGate"><p style="color:var(--plum-soft);">Loading your account…</p></div>
+
+<div id="accountRoot" style="display:none;">
+
+<div class="bg-field">
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+</div>
+
+<header>
+  <a class="brand" href="index.html" aria-label="Bloomé by KJ home">
+    <img class="brand-logo" src="logo.webp" alt="Bloomé by KJ">
+  </a>
+  <button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰</button>
+  <nav class="links" id="navLinks">
+    <a href="shop.html">Shop</a>
+    <a href="index.html">Home</a>
+  </nav>
+  <div class="header-actions">
+    <div class="account-pill" id="accountPill">
+      <span class="avatar" id="accountAvatar">•</span>
+      <span id="accountLabel">…</span>
+      <button id="signOutBtn">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<div class="account-wrap">
+  <div class="eyebrow">My account</div>
+  <h1 style="font-family:'Fraunces',serif; font-weight:500; font-size:clamp(26px,3vw,36px); margin:0 0 26px;">Welcome back<span id="welcomeName"></span></h1>
+
+  <div class="account-tabs">
+    <button class="account-tab active" data-tab="tabOrders">My orders</button>
+    <button class="account-tab" data-tab="tabProfile">Profile info</button>
+  </div>
+
+  <div id="tabOrders">
+    <div class="account-card">
+      <h3>Order history</h3>
+      <div id="ordersList"><div class="empty-orders">Loading your orders…</div></div>
+    </div>
+  </div>
+
+  <div id="tabProfile" style="display:none;">
+    <div class="account-card">
+      <h3>Personal info</h3>
+      <div class="field"><label>Full name</label><input type="text" id="profName" placeholder="Jane Dela Cruz"></div>
+      <div class="two-col">
+        <div class="field"><label>Email</label><input type="email" id="profEmail" disabled></div>
+        <div class="field"><label>Phone</label><input type="tel" id="profPhone" placeholder="09xx xxx xxxx"></div>
+      </div>
+      <div class="field"><label>Default delivery address</label><textarea id="profAddress" placeholder="Street, barangay, city"></textarea></div>
+      <div style="font-size:12px; color:var(--plum-soft); margin-bottom:14px;">This pre-fills your details next time you check out — it doesn't change any orders you've already placed.</div>
+      <button class="full-btn" id="saveProfileBtn" style="max-width:220px;">Save profile</button>
+      <div id="profileMsg"></div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /accountRoot -->
+
+<div class="toast" id="toast"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="account.js"></script>
+</body>
+</html>

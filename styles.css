@@ -531,6 +531,9 @@
   .pill.status-processing{background:#fdf1dc; color:#96660b;}
   .pill.status-shipped{background:#e0e7ff; color:#4338ca;}
   .pill.status-cancelled{background:#fce4e4; color:#a13333;}
+  .pill.status-returned{background:#fde8f0; color:#b8447a;}
+  .pill.status-damaged{background:#3a2740; color:#f3d9e6;}
+  .pill.source-manual{background:#fff2d6; color:#8a5a00;}
   .pill.role-admin{background:#e6dcf6; color:#5d3f8f;}
   .pill.role-customer{background:#eee; color:#555;}
   .pill.pay-unpaid{background:#fce4e4; color:#a13333;}

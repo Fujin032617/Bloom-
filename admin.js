@@ -465,22 +465,25 @@ function listenOrders(){
     renderSalesDashboard();
   }, err=>console.error(err));
 }
-const ORDER_STATUSES = ['new','confirmed','processing','shipped','done','cancelled'];
-const ORDER_STATUS_LABELS = {new:'New', confirmed:'Confirmed', processing:'Processing', shipped:'Shipped', done:'Fulfilled', cancelled:'Cancelled'};
+const ORDER_STATUSES = ['new','confirmed','processing','shipped','done','cancelled','returned','damaged'];
+const ORDER_STATUS_LABELS = {new:'New', confirmed:'Confirmed', processing:'Processing', shipped:'Shipped', done:'Fulfilled', cancelled:'Cancelled', returned:'Returned to seller', damaged:'Damaged / write-off'};
+// Statuses that deduct stock the first time an order reaches them (guarded
+// by the stockDeducted flag below so it only ever happens once).
+const STOCK_DEDUCTING_STATUSES = ['shipped','done'];
 
 function renderAdminOrders(){
   const body = document.getElementById('adminOrderBody');
   if(!body) return;
   let orders = window._orders || [];
   if(orders.length===0){
-    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders yet.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders yet.</td></tr>`;
     return;
   }
   if(adminSearchTerm){
     orders = orders.filter(o=>(o.customerName||'').toLowerCase().includes(adminSearchTerm) || (o.phone||'').toLowerCase().includes(adminSearchTerm));
   }
   if(orders.length===0){
-    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders match "${adminSearchTerm}".</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No orders match "${adminSearchTerm}".</td></tr>`;
     return;
   }
   body.innerHTML = orders.map(o=>{
@@ -490,10 +493,11 @@ function renderAdminOrders(){
     const options = ORDER_STATUSES.map(s=>`<option value="${s}" ${s===status?'selected':''}>${ORDER_STATUS_LABELS[s]}</option>`).join('');
     const payStatus = o.paymentStatus || (o.paymentMethod ? 'submitted' : 'unpaid');
     const payLabel = payStatus==='verified' ? 'Verified' : (payStatus==='submitted' ? 'Submitted' : 'No payment info');
-    const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : '—');
+    const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : (o.paymentMethod === 'manual' ? 'Manual' : '—'));
+    const manualBadge = o.source==='manual' ? `<span class="pill source-manual">Manual sale</span><br>` : '';
     return `
     <tr>
-      <td><strong>${esc(o.customerName)||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${esc(o.phone)}</span></td>
+      <td>${manualBadge}<strong>${esc(o.customerName)||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${esc(o.phone)}</span></td>
       <td style="max-width:220px;">${itemSummary}</td>
       <td>${money(o.total)}</td>
       <td>
@@ -505,9 +509,82 @@ function renderAdminOrders(){
         <select class="order-status-select" onchange="changeOrderStatus('${o.id}', this.value)">${options}</select>
       </td>
       <td>${date}</td>
+      <td>
+        <button class="icon-btn" onclick="openOrderDetails('${o.id}')">View details</button>
+        <button class="icon-btn danger" onclick="deleteOrder('${o.id}')">Delete</button>
+      </td>
     </tr>`;
   }).join('');
 }
+
+// Shows the full order — delivery address, email, and any customer notes —
+// none of which fit in the table row. Without this, the only way to see
+// where to actually ship something is opening the Firebase console by hand.
+let currentDetailsOrderId = null;
+function openOrderDetails(id){
+  const order = (window._orders||[]).find(o=>o.id===id);
+  if(!order) return;
+  currentDetailsOrderId = id;
+  document.getElementById('orderCourier').value = order.courier || order.shippingMethod || '';
+  document.getElementById('orderTrackingNumber').value = order.trackingNumber || '';
+  document.getElementById('trackingMsg').innerHTML = '';
+  const date = order.createdAt && order.createdAt.toDate ? order.createdAt.toDate().toLocaleString() : '—';
+  const status = order.status || 'new';
+  const payStatus = order.paymentStatus || (order.paymentMethod ? 'submitted' : 'unpaid');
+  const payLabel = payStatus==='verified' ? 'Verified' : (payStatus==='submitted' ? 'Submitted' : 'No payment info');
+  const methodLabel = order.paymentMethod === 'gcash' ? 'GCash' : (order.paymentMethod === 'bank' ? 'Bank/InstaPay' : '—');
+  const itemsHtml = (order.items||[]).map(i=>`<li>${esc(i.qty)}× ${esc(i.name)} — ${money((i.price||0)*(i.qty||0))}</li>`).join('');
+  document.getElementById('orderDetailsBody').innerHTML = `
+    <div class="two-col" style="margin-bottom:14px;">
+      <div><strong>Customer</strong><br>${esc(order.customerName)||'—'}</div>
+      <div><strong>Phone</strong><br>${esc(order.phone)||'—'}</div>
+    </div>
+    <div class="two-col" style="margin-bottom:14px;">
+      <div><strong>Email</strong><br>${esc(order.email)||'—'}</div>
+      <div><strong>Placed</strong><br>${date}</div>
+    </div>
+    <div style="margin-bottom:14px;"><strong>Delivery address</strong><br>${esc(order.address)||'—'}</div>
+    <div style="margin-bottom:14px;"><strong>Preferred courier (customer's choice)</strong><br>${esc(order.shippingMethod)||'—'}</div>
+    <div style="margin-bottom:14px;"><strong>Order notes</strong><br>${order.notes ? esc(order.notes) : '<span style="color:var(--plum-soft);">None</span>'}</div>
+    <div style="margin-bottom:14px;"><strong>Items</strong><ul style="margin:6px 0 0; padding-left:18px;">${itemsHtml}</ul></div>
+    <div class="two-col" style="margin-bottom:14px;">
+      <div><strong>Payment</strong><br><span class="pill pay-${payStatus}">${payLabel}</span> ${methodLabel}${order.paymentReference ? ' · Ref: '+esc(order.paymentReference) : ''}</div>
+      <div><strong>Status</strong><br>${ORDER_STATUS_LABELS[status]||status}</div>
+    </div>
+    <div><strong>Total</strong><br>${money(order.total)}</div>
+  `;
+  document.getElementById('orderDetailsOverlay').classList.add('show');
+}
+document.getElementById('orderDetailsCloseBtn').addEventListener('click', ()=>{
+  document.getElementById('orderDetailsOverlay').classList.remove('show');
+});
+
+// Saves courier + tracking number onto the order. If the order hasn't
+// reached "shipped" yet, this also advances its status to "shipped" —
+// that's the point at which a customer actually has something to track.
+// It never moves a "done"/"cancelled" order backwards.
+document.getElementById('saveTrackingBtn').addEventListener('click', async ()=>{
+  if(!currentDetailsOrderId) return;
+  const order = (window._orders||[]).find(o=>o.id===currentDetailsOrderId);
+  if(!order) return;
+  const courier = document.getElementById('orderCourier').value.trim();
+  const trackingNumber = document.getElementById('orderTrackingNumber').value.trim();
+  const msg = document.getElementById('trackingMsg');
+  try{
+    const data = { courier, trackingNumber };
+    const alreadyPastShipped = ['shipped','done','cancelled','returned','damaged'].includes(order.status);
+    const advancingToShipped = !alreadyPastShipped && (courier || trackingNumber);
+    if(advancingToShipped){
+      data.status = 'shipped';
+      await ensureStockDeducted(order, 'Order shipped');
+    }
+    await db.collection('orders').doc(currentDetailsOrderId).update(data);
+    msg.innerHTML = '<div class="form-msg ok">Delivery info saved.</div>';
+    toast(advancingToShipped ? 'Tracking saved — order marked as shipped and stock updated' : 'Delivery info saved');
+  }catch(err){
+    msg.innerHTML = `<div class="form-msg err">${err.message}</div>`;
+  }
+});
 
 async function verifyPayment(id){
   if(!confirm('Confirm you have checked this reference number in your GCash/bank app and the amount matches?')) return;
@@ -519,29 +596,89 @@ async function verifyPayment(id){
   }catch(err){ alert(err.message); }
 }
 
-// Handles any status change from the dropdown. Stock is only ever deducted
-// the FIRST time an order transitions into "done" (fulfilled) — flipping the
-// dropdown back and forth afterwards will not double-deduct stock.
+// Stock decrements happen one item at a time (adjustStock is called in a
+// loop), so a failure partway through — a deleted product, a dropped
+// network call — could previously leave some items decremented while the
+// order's status hadn't actually changed yet. Retrying would then decrement
+// the already-processed items a second time if the only guard was the
+// status string itself.
+//
+// To make retries safe, we set a `stockDeducted: true` flag on the order as
+// the very first write, before touching any product's stock. If a retry
+// comes in after a partial failure, that flag is already true, so we skip
+// straight past the stock loop — no item can ever be decremented twice.
+//
+// Stock now leaves inventory the moment an order is marked "Shipped" (not
+// "Fulfilled") — that's the point the item has actually left the shelf.
+// If an order somehow jumps straight to "done" without passing through
+// "shipped" (e.g. a manual/offline sale entered directly as fulfilled),
+// this still deducts stock at that point, guarded the same way.
+async function ensureStockDeducted(order, reasonPrefix){
+  if(order.stockDeducted) return;
+  await db.collection('orders').doc(order.id).update({ stockDeducted: true });
+  for(const item of (order.items||[])){
+    await adjustStock(item.productId, -Math.abs(item.qty), `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'}`);
+  }
+}
+
+// Reverses a prior deduction (used when an order is marked "Returned to
+// seller") so the items go back into sellable stock. Guarded by
+// `stockRestored` the same way ensureStockDeducted is guarded, so flipping
+// the status dropdown back and forth never double-restocks.
+async function restoreStockForOrder(order, reasonPrefix){
+  if(!order.stockDeducted || order.stockRestored) return;
+  await db.collection('orders').doc(order.id).update({ stockRestored: true });
+  for(const item of (order.items||[])){
+    await adjustStock(item.productId, Math.abs(item.qty), `${reasonPrefix||'Returned'} — ${order.customerName||'customer'}`);
+  }
+}
+
+// Handles any status change from the dropdown.
 async function changeOrderStatus(id, newStatus){
   const order = (window._orders||[]).find(o=>o.id===id);
   if(!order) return;
-  const wasFulfilled = order.status === 'done';
-  if(newStatus === 'done' && !wasFulfilled && order.paymentStatus !== 'verified'){
-    if(!confirm('Payment for this order has not been marked verified yet. Fulfill it anyway?')) return;
+  const willDeductNow = STOCK_DEDUCTING_STATUSES.includes(newStatus) && !order.stockDeducted;
+  if(willDeductNow && order.paymentStatus !== 'verified'){
+    const label = newStatus==='shipped' ? 'shipped' : 'fulfilled';
+    if(!confirm(`Payment for this order has not been marked verified yet. Mark it ${label} anyway?`)) return;
+  }
+  if(newStatus === 'returned' && !order.stockDeducted){
+    if(!confirm('This order was never marked as shipped/fulfilled, so there is no stock to bring back. Mark it as returned anyway?')) return;
   }
   try{
-    if(newStatus === 'done' && !wasFulfilled){
-      for(const item of (order.items||[])){
-        await adjustStock(item.productId, -Math.abs(item.qty), `Order fulfilled — ${order.customerName||'customer'}`);
-      }
-      await db.collection('orders').doc(id).update({
-        status:'done', fulfilledAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-      toast('Order marked as fulfilled and stock updated');
-    } else {
-      await db.collection('orders').doc(id).update({ status:newStatus });
-      toast(`Order status set to ${ORDER_STATUS_LABELS[newStatus]}`);
+    if(STOCK_DEDUCTING_STATUSES.includes(newStatus)){
+      await ensureStockDeducted(order, newStatus==='shipped' ? 'Order shipped' : 'Order fulfilled');
     }
+    if(newStatus === 'returned'){
+      await restoreStockForOrder(order, 'Returned to seller');
+    }
+    const updateData = { status:newStatus };
+    if(newStatus === 'done') updateData.fulfilledAt = firebase.firestore.FieldValue.serverTimestamp();
+    await db.collection('orders').doc(id).update(updateData);
+    toast(`Order status set to ${ORDER_STATUS_LABELS[newStatus]}`);
+  }catch(err){ alert(err.message); }
+}
+
+// Deletes an order/sale record entirely — e.g. a duplicate, a mistake, or a
+// sale that needs to disappear from the books. If stock had already been
+// deducted for it and never restored, that stock is put back first so
+// deleting a sale never silently leaves inventory permanently short.
+async function deleteOrder(id){
+  const order = (window._orders||[]).find(o=>o.id===id);
+  if(!order) return;
+  const willRestock = order.stockDeducted && !order.stockRestored;
+  const msg = willRestock
+    ? 'Delete this order? Its items will be added back to stock since they were already deducted. This cannot be undone.'
+    : 'Delete this order? This cannot be undone.';
+  if(!confirm(msg)) return;
+  try{
+    if(willRestock){
+      for(const item of (order.items||[])){
+        await adjustStock(item.productId, Math.abs(item.qty), `Order deleted — ${order.customerName||'customer'}`);
+      }
+    }
+    await db.collection('orders').doc(id).delete();
+    toast('Order deleted');
   }catch(err){ alert(err.message); }
 }
 
@@ -552,6 +689,8 @@ function renderSalesDashboard(){
   const salesRow = document.getElementById('salesStatRow');
   if(!salesRow) return;
   const orders = (window._orders||[]).filter(o=>o.status==='done');
+  const returnedCount = (window._orders||[]).filter(o=>o.status==='returned').length;
+  const damagedCount = (window._orders||[]).filter(o=>o.status==='damaged').length;
 
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -594,25 +733,29 @@ function renderSalesDashboard(){
     <div class="stat-card"><div class="num">${money(profitMonth)}</div><div class="label">Profit this month</div></div>
     <div class="stat-card"><div class="num">${money(profitAll)}</div><div class="label">All-time profit</div></div>
     <div class="stat-card"><div class="num">${marginAll.toFixed(1)}%</div><div class="label">Overall margin</div></div>
+    <div class="stat-card"><div class="num">${returnedCount}</div><div class="label">Returned to seller</div></div>
+    <div class="stat-card"><div class="num">${damagedCount}</div><div class="label">Damaged / write-off</div></div>
   `;
 
   const body = document.getElementById('adminSalesBody');
   if(orders.length===0){
-    body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--plum-soft); padding:40px;">No completed sales yet.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--plum-soft); padding:40px;">No completed sales yet.</td></tr>`;
   } else {
     body.innerHTML = orders.slice(0,30).map(o=>{
       const itemSummary = (o.items||[]).map(i=>`${esc(i.qty)}× ${esc(i.name)}`).join(', ');
       const date = o.fulfilledAt && o.fulfilledAt.toDate ? o.fulfilledAt.toDate().toLocaleDateString() : '—';
       const cost = orderCost(o);
       const profit = orderProfit(o);
+      const manualBadge = o.source==='manual' ? ' <span class="pill source-manual">Manual</span>' : '';
       return `
       <tr>
-        <td><strong>${esc(o.customerName)||'—'}</strong></td>
+        <td><strong>${esc(o.customerName)||'—'}</strong>${manualBadge}</td>
         <td style="max-width:220px;">${itemSummary}</td>
         <td>${money(o.total)}</td>
         <td>${money(cost)}</td>
         <td>${money(profit)}</td>
         <td>${date}</td>
+        <td><button class="icon-btn danger" onclick="deleteOrder('${o.id}')">Delete</button></td>
       </tr>`;
     }).join('');
   }
@@ -637,6 +780,127 @@ function renderSalesDashboard(){
     `).join('');
   }
 }
+
+// ============================================================
+// MANUAL SALES (offline / off-site sales, entered by hand so revenue
+// and stock levels reflect sales that didn't happen through the site —
+// e.g. a Messenger order, a marketplace sale, or an in-person sale).
+// These are written as normal "done" orders with source:'manual' so
+// they show up in Sales, Orders, and inventory just like any other
+// completed sale, tagged with a "Manual sale" badge.
+// ============================================================
+let manualSaleItems = [];
+
+function openManualSaleModal(){
+  manualSaleItems = [];
+  document.getElementById('manualSaleCustomer').value = '';
+  document.getElementById('manualSaleNotes').value = '';
+  document.getElementById('manualSaleMsg').innerHTML = '';
+  addManualSaleItemRow();
+  document.getElementById('manualSaleModalOverlay').classList.add('show');
+}
+const addManualSaleBtn = document.getElementById('addManualSaleBtn');
+if(addManualSaleBtn) addManualSaleBtn.addEventListener('click', openManualSaleModal);
+const manualSaleCloseBtn = document.getElementById('manualSaleCloseBtn');
+if(manualSaleCloseBtn) manualSaleCloseBtn.addEventListener('click', ()=>{
+  document.getElementById('manualSaleModalOverlay').classList.remove('show');
+});
+
+function addManualSaleItemRow(){
+  const firstProduct = allProducts[0];
+  manualSaleItems.push({
+    productId: firstProduct ? firstProduct.id : '',
+    qty: 1,
+    price: firstProduct ? Number(firstProduct.price||0) : 0
+  });
+  renderManualSaleItems();
+}
+function removeManualSaleItemRow(i){
+  manualSaleItems.splice(i,1);
+  renderManualSaleItems();
+}
+function renderManualSaleItems(){
+  const wrap = document.getElementById('manualSaleItemList');
+  if(!wrap) return;
+  if(allProducts.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">Add a product first — there's nothing to sell yet.</p>`;
+    return;
+  }
+  if(manualSaleItems.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No items yet — add one below.</p>`;
+  } else {
+    wrap.innerHTML = manualSaleItems.map((it,i)=>{
+      const options = allProducts.map(p=>`<option value="${p.id}" ${p.id===it.productId?'selected':''}>${esc(p.name)||'Untitled'}</option>`).join('');
+      return `
+      <div class="repeat-row">
+        <div class="field" style="flex:2;"><label>Product</label><select class="man-item-product" data-i="${i}">${options}</select></div>
+        <div class="field" style="max-width:90px;"><label>Qty</label><input type="number" min="1" class="man-item-qty" data-i="${i}" value="${it.qty}"></div>
+        <div class="field" style="max-width:130px;"><label>Price each</label><input type="number" min="0" step="0.01" class="man-item-price" data-i="${i}" value="${it.price}"></div>
+        <button type="button" class="remove-row-btn" onclick="removeManualSaleItemRow(${i})">Remove</button>
+      </div>`;
+    }).join('');
+  }
+  wrap.querySelectorAll('.man-item-product').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const i = Number(sel.dataset.i);
+      manualSaleItems[i].productId = sel.value;
+      const p = allProducts.find(x=>x.id===sel.value);
+      if(p) manualSaleItems[i].price = Number(p.price||0);
+      renderManualSaleItems();
+    });
+  });
+  wrap.querySelectorAll('.man-item-qty').forEach(inp=>{
+    inp.addEventListener('input', ()=>{ manualSaleItems[Number(inp.dataset.i)].qty = parseInt(inp.value)||1; updateManualSaleTotal(); });
+  });
+  wrap.querySelectorAll('.man-item-price').forEach(inp=>{
+    inp.addEventListener('input', ()=>{ manualSaleItems[Number(inp.dataset.i)].price = parseFloat(inp.value)||0; updateManualSaleTotal(); });
+  });
+  updateManualSaleTotal();
+}
+function updateManualSaleTotal(){
+  const total = manualSaleItems.reduce((s,it)=>s+Number(it.price||0)*Number(it.qty||0),0);
+  const totalEl = document.getElementById('manualSaleTotal');
+  if(totalEl) totalEl.textContent = money(total);
+}
+const addManualSaleItemBtn = document.getElementById('addManualSaleItemBtn');
+if(addManualSaleItemBtn) addManualSaleItemBtn.addEventListener('click', addManualSaleItemRow);
+
+const saveManualSaleBtn = document.getElementById('saveManualSaleBtn');
+if(saveManualSaleBtn) saveManualSaleBtn.addEventListener('click', async ()=>{
+  const msg = document.getElementById('manualSaleMsg');
+  const customerName = document.getElementById('manualSaleCustomer').value.trim() || 'Walk-in / manual sale';
+  const notes = document.getElementById('manualSaleNotes').value.trim();
+  const validItems = manualSaleItems.filter(it=>it.productId && Number(it.qty)>0);
+  if(validItems.length===0){
+    msg.innerHTML = '<div class="form-msg err">Add at least one item with a quantity.</div>';
+    return;
+  }
+  const items = validItems.map(it=>{
+    const p = allProducts.find(x=>x.id===it.productId);
+    return { productId: it.productId, name: p ? p.name : 'Unknown item', price: Number(it.price||0), costPrice: p ? Number(p.costPrice||0) : 0, qty: Number(it.qty) };
+  });
+  const total = items.reduce((s,i)=>s+i.price*i.qty,0);
+  saveManualSaleBtn.disabled = true; saveManualSaleBtn.textContent = 'Saving...';
+  try{
+    await db.collection('orders').add({
+      customerName, email:'', phone:'', address:'', notes, items, total,
+      customerUid: null,
+      paymentMethod: 'manual', paymentReference: '', paymentStatus: 'verified',
+      source: 'manual',
+      status: 'done', stockDeducted: true,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      fulfilledAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    for(const item of items){
+      await adjustStock(item.productId, -Math.abs(item.qty), `Manual sale entry — ${customerName}`);
+    }
+    toast('Manual sale recorded');
+    document.getElementById('manualSaleModalOverlay').classList.remove('show');
+  }catch(err){
+    msg.innerHTML = `<div class="form-msg err">${err.message}</div>`;
+  }
+  saveManualSaleBtn.disabled = false; saveManualSaleBtn.textContent = 'Save sale';
+});
 
 // ============================================================
 // SETTINGS

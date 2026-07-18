@@ -186,7 +186,7 @@
     modeToggle.style.display = isSpecial ? 'none' : 'flex';
     passwordField.style.display = isSpecial ? 'none' : 'block';
     forgotPasswordLink.style.display = mode==='signin' ? 'block' : 'none';
-    document.getElementById('backToSignInLink').style.display = mode==='reset' ? 'block' : 'none';
+    document.getElementById('backToSignInLink').style.display = (mode==='reset' || mode==='verify') ? 'block' : 'none';
     document.getElementById('codeField').style.display = mode==='verify' ? 'block' : 'none';
     document.getElementById('resendCodeLink').style.display = mode==='verify' ? 'block' : 'none';
     document.getElementById('backHomeLink').style.display = mode==='verify' ? 'none' : 'block';
@@ -204,10 +204,12 @@
       formTitle.textContent = 'Reset your password';
       formSub.textContent = "Enter your email and we'll send you a link to reset it.";
       submitBtn.textContent = 'Send reset link';
+      document.getElementById('backToSignInBtn').textContent = '← Back to sign in';
     } else if(mode==='verify'){
       formTitle.textContent = 'Check your email';
       formSub.textContent = pendingUser ? `We sent a 6-digit code to ${pendingUser.email}.` : 'Enter the 6-digit code we emailed you.';
       submitBtn.textContent = 'Verify';
+      document.getElementById('backToSignInBtn').textContent = 'Wrong account? Sign out and try again';
     } else {
       formTitle.textContent = 'Welcome back';
       formSub.textContent = 'Sign in to shop or manage your store.';
@@ -218,14 +220,30 @@
   modeSignInBtn.addEventListener('click', ()=>setMode('signin'));
   modeSignUpBtn.addEventListener('click', ()=>setMode('signup'));
 
+  // Enter key submits the form from any of its text fields, same as a
+  // native <form> would — customers shouldn't have to reach for the button.
+  ['authEmail','authPassword','authName','authCode'].forEach(id=>{
+    document.getElementById(id).addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){ e.preventDefault(); submitBtn.click(); }
+    });
+  });
+
   forgotPasswordBtn.addEventListener('click', (e)=>{
     e.preventDefault();
     setMode('reset');
   });
 
-  document.getElementById('backToSignInBtn').addEventListener('click', (e)=>{
+  document.getElementById('backToSignInBtn').addEventListener('click', async (e)=>{
     e.preventDefault();
+    const wasVerify = mode === 'verify';
+    pendingUser = null;
     setMode('signin');
+    // In verify mode the person is often still signed in (just unverified) —
+    // sign them out so they land on a clean sign-in form and can use a
+    // different account instead of being trapped on this one's code screen.
+    if(wasVerify && auth.currentUser){
+      try{ await auth.signOut(); }catch(err){ /* ignore */ }
+    }
   });
 
   // Sends (or resends) a fresh code to whichever user is pending verification.
@@ -318,8 +336,18 @@
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
         pendingUser = { uid: userCred.user.uid, email, name };
-        await issueVerificationCode();
-        setMode('verify');
+        // The account + user doc above are already created by this point.
+        // If sending the verification email fails (EmailJS down, bad keys,
+        // etc.), don't leave the person stuck on a plain error — a retry of
+        // "Create account" would just fail with "email already in use" and
+        // give no hint that their account actually exists. Tell them to
+        // switch to Sign In instead, which re-triggers a fresh code send.
+        try{
+          await issueVerificationCode();
+          setMode('verify');
+        }catch(codeErr){
+          msgBox.innerHTML = `<div class="form-msg err">Account created, but we couldn't send the verification email (${codeErr.message||codeErr}). Switch to "Sign in" and log in with the same email and password to get a new code.</div>`;
+        }
         submitBtn.disabled = false;
         return;
       } else {

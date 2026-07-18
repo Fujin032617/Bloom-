@@ -10,11 +10,54 @@ document.getElementById('year').textContent = new Date().getFullYear();
 // ============================================================
 let allProducts = [];
 let cart = {}; // { productId: qty }
+let cartStorageKey = null; // set once we know the signed-in user's uid, e.g. "bloome_cart_<uid>"
 let activeCategory = 'top';
 let sortBy = 'newest';
 let searchTerm = '';
 let siteSettings = {};
 let selectedPayMethod = null;
+
+// ============================================================
+// CART PERSISTENCE (localStorage)
+// The bag is kept per signed-in user (keyed by uid) so it survives
+// refreshes, closed tabs, and accidental navigation, but doesn't leak
+// between different accounts on a shared browser.
+// ============================================================
+function loadCart(uid){
+  try{
+    const raw = localStorage.getItem(`bloome_cart_${uid}`);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  }catch(err){
+    console.error('Could not read saved cart', err);
+    return {};
+  }
+}
+function saveCart(){
+  if(!cartStorageKey) return;
+  try{
+    localStorage.setItem(cartStorageKey, JSON.stringify(cart));
+  }catch(err){
+    console.error('Could not save cart', err);
+  }
+}
+// Drops any cart entries for products that no longer exist or have gone
+// out of stock since the cart was last saved (e.g. the user left the
+// tab open for a while, or came back on another day).
+function pruneCartAgainstStock(){
+  let changed = false;
+  Object.keys(cart).forEach(id=>{
+    const p = allProducts.find(x=>x.id===id);
+    if(!p || Number(p.stock||0) <= 0){
+      delete cart[id];
+      changed = true;
+    } else if(cart[id] > Number(p.stock)){
+      cart[id] = Number(p.stock);
+      changed = true;
+    }
+  });
+  if(changed) saveCart();
+}
 
 // ============================================================
 // AUTH GATE — only signed-in users (customer or admin) get in.
@@ -27,6 +70,10 @@ requireRole(['customer','admin'], (user, role)=>{
   const label = user.email ? user.email.split('@')[0] : 'there';
   document.getElementById('accountLabel').textContent = `Hi, ${label}`;
   document.getElementById('accountAvatar').textContent = (user.email||'?').charAt(0).toUpperCase();
+
+  cartStorageKey = `bloome_cart_${user.uid}`;
+  cart = loadCart(user.uid);
+  renderCart();
 
   listenProducts();
   loadSiteSettings();
@@ -83,9 +130,11 @@ function listenProducts(){
   db.collection('products').orderBy('createdAt','desc').onSnapshot(snap=>{
     allProducts = [];
     snap.forEach(doc=> allProducts.push({id:doc.id, ...doc.data()}));
+    pruneCartAgainstStock();
     renderFilters();
     renderCategorySlider();
     renderProductGrid();
+    renderCart();
   }, err=>{
     console.error(err);
     document.getElementById('productGrid').innerHTML =
@@ -253,6 +302,7 @@ function addToCart(id, evt){
     return;
   }
   cart[id] = (cart[id]||0) + 1;
+  saveCart();
   renderCart();
   toast(`Added ${p.name} to your bag`);
 }
@@ -266,9 +316,10 @@ function changeQty(id, delta){
   }
   cart[id] += delta;
   if(cart[id] <= 0) delete cart[id];
+  saveCart();
   renderCart();
 }
-function removeFromCart(id){ delete cart[id]; renderCart(); }
+function removeFromCart(id){ delete cart[id]; saveCart(); renderCart(); }
 
 function renderCart(){
   const ids = Object.keys(cart);
@@ -288,7 +339,7 @@ function renderCart(){
     subtotal += lineTotal;
     return `
     <div class="cart-item">
-      <img src="${esc(p.imageUrl)}" alt="">
+      <img src="${esc(p.imageUrl)}" alt="${esc(p.name)}">
       <div class="cart-item-info">
         <h5>${esc(p.name)}</h5>
         <div style="font-size:12.5px; color:var(--plum-soft);">${money(p.price)} each</div>
@@ -326,6 +377,13 @@ document.getElementById('checkoutBtn').addEventListener('click', ()=>{
 });
 document.getElementById('checkoutCloseBtn').addEventListener('click', ()=>{
   document.getElementById('checkoutModalOverlay').classList.remove('show');
+});
+// Enter key submits from any single-line field (not the address/notes
+// textareas, where Enter should just add a line break).
+['custName','custEmail','custPhone','custPaymentRef'].forEach(id=>{
+  document.getElementById(id).addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){ e.preventDefault(); document.getElementById('submitOrderBtn').click(); }
+  });
 });
 
 // ============================================================
@@ -371,12 +429,17 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
   const email = document.getElementById('custEmail').value.trim();
   const phone = document.getElementById('custPhone').value.trim();
   const address = document.getElementById('custAddress').value.trim();
+  const shippingMethod = document.getElementById('custShippingMethod').value;
   const notes = document.getElementById('custNotes').value.trim();
   const paymentRef = document.getElementById('custPaymentRef').value.trim();
   const msgBox = document.getElementById('checkoutMsg');
 
   if(!name || !phone || !address){
     msgBox.innerHTML = '<div class="form-msg err">Please fill in your name, phone, and delivery address.</div>';
+    return;
+  }
+  if(!shippingMethod){
+    msgBox.innerHTML = '<div class="form-msg err">Please choose a courier.</div>';
     return;
   }
   if(!selectedPayMethod){
@@ -396,7 +459,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       return;
     }
     if(cart[id] > Number(p.stock||0)){
-      msgBox.innerHTML = `<div class="form-msg err">Only ${Number(p.stock||0)} of "${p.name}" left — please adjust your bag.</div>`;
+      msgBox.innerHTML = `<div class="form-msg err">Only ${Number(p.stock||0)} of "${esc(p.name)}" left — please adjust your bag.</div>`;
       renderCart();
       return;
     }
@@ -411,7 +474,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
   btn.disabled = true; btn.textContent = 'Sending...';
   try{
     await db.collection('orders').add({
-      customerName:name, email, phone, address, notes, items, total,
+      customerName:name, email, phone, address, shippingMethod, notes, items, total,
       customerUid: auth.currentUser ? auth.currentUser.uid : null,
       paymentMethod: selectedPayMethod,
       paymentReference: paymentRef,
@@ -420,6 +483,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     });
     msgBox.innerHTML = '<div class="form-msg ok">Order request sent! We will verify your payment and confirm shortly.</div>';
     cart = {};
+    saveCart();
     renderCart();
     setTimeout(()=>{
       document.getElementById('checkoutModalOverlay').classList.remove('show');
@@ -429,6 +493,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       document.getElementById('custEmail').value='';
       document.getElementById('custPhone').value='';
       document.getElementById('custAddress').value='';
+      document.getElementById('custShippingMethod').value='';
       document.getElementById('custNotes').value='';
       resetPaymentPicker();
     }, 1800);
