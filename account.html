@@ -40,7 +40,10 @@
   .order-pills{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
   .track-box{
     background:var(--bg-alt); border-radius:12px; padding:12px 14px; margin-top:10px; font-size:13.5px;
+    border:1px solid var(--line);
   }
+  .track-box-head{ display:inline-flex; align-items:center; gap:7px; color:var(--plum); }
+  .track-box-head svg{ color:var(--rose-deep); flex:none; }
   .track-box .tnum{ font-weight:700; letter-spacing:0.4px; }
   .track-steps{ display:flex; gap:6px; margin:14px 0 0; }
   .track-steps span{ flex:1; height:5px; border-radius:999px; background:var(--line); }
@@ -86,6 +89,7 @@
   <div class="account-tabs">
     <button class="account-tab active" data-tab="tabOrders">My orders</button>
     <button class="account-tab" data-tab="tabProfile">Profile info</button>
+    <button class="account-tab" data-tab="tabReferral">Refer & earn</button>
   </div>
 
   <div id="tabOrders">
@@ -107,6 +111,35 @@
       <div style="font-size:12px; color:var(--plum-soft); margin-bottom:14px;">This pre-fills your details next time you check out — it doesn't change any orders you've already placed.</div>
       <button class="full-btn" id="saveProfileBtn" style="max-width:220px;">Save profile</button>
       <div id="profileMsg"></div>
+    </div>
+  </div>
+
+  <div id="tabReferral" style="display:none;">
+    <div class="account-card" id="referralLocked">
+      <h3>Refer a friend</h3>
+      <p style="font-size:13.5px; color:var(--plum-soft); margin-top:-8px; margin-bottom:0;">Your referral link unlocks after your first completed order — place and receive an order to get access, then come back here to start earning store credit.</p>
+    </div>
+    <div id="referralUnlocked" style="display:none;">
+      <div class="account-card">
+        <h3>Refer a friend</h3>
+        <p style="font-size:13.5px; color:var(--plum-soft); margin-top:-8px;">Share your link. When someone signs up through it and their first order is marked fulfilled, you get store credit to use on your next order.</p>
+        <div class="field">
+          <label>Your referral link</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="referralLinkInput" readonly style="flex:1;">
+            <button class="icon-btn" id="copyReferralBtn" style="flex:none;">Copy</button>
+          </div>
+        </div>
+        <div style="margin-top:18px; display:flex; justify-content:space-between; align-items:center; background:var(--bg-alt); border-radius:12px; padding:14px 16px;">
+          <span style="font-weight:700; font-size:13.5px;">Your store credit balance</span>
+          <strong id="referralCreditBalance" style="font-size:17px;">₱0.00</strong>
+        </div>
+        <div style="font-size:12px; color:var(--plum-soft); margin-top:10px;">Credit is applied automatically as an option at checkout — look for "Apply store credit" in your bag.</div>
+      </div>
+      <div class="account-card">
+        <h3>People you've referred</h3>
+        <div id="referralList"><div class="empty-orders">Loading…</div></div>
+      </div>
     </div>
   </div>
 </div>

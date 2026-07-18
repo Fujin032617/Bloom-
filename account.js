@@ -21,6 +21,8 @@ requireRole(['customer','admin'], (user)=>{
 
   loadProfile(user);
   listenMyOrders(user.uid);
+  loadReferralInfo(user);
+  loadReferralProgramSetting();
 });
 
 document.getElementById('signOutBtn').addEventListener('click', ()=>{
@@ -40,6 +42,7 @@ document.querySelectorAll('.account-tab').forEach(btn=>{
     btn.classList.add('active');
     document.getElementById('tabOrders').style.display = btn.dataset.tab==='tabOrders' ? 'block' : 'none';
     document.getElementById('tabProfile').style.display = btn.dataset.tab==='tabProfile' ? 'block' : 'none';
+    document.getElementById('tabReferral').style.display = btn.dataset.tab==='tabReferral' ? 'block' : 'none';
   });
 });
 
@@ -81,6 +84,107 @@ document.getElementById('saveProfileBtn').addEventListener('click', async ()=>{
 });
 
 // ============================================================
+// REFER & EARN
+// ============================================================
+// Gate: the referral link/credit UI only unlocks once this customer has at
+// least one order that reached "Fulfilled" (done) — a brand-new sign-up, or
+// someone whose order is still pending/processing, doesn't see it yet.
+// Re-evaluated live off the same orders snapshot used for "My orders", so
+// the tab unlocks itself the moment an order is marked fulfilled without
+// needing a page refresh.
+function updateReferralEligibility(orders){
+  const eligible = (orders||[]).some(o=>o.status==='done');
+  const lockedEl = document.getElementById('referralLocked');
+  const unlockedEl = document.getElementById('referralUnlocked');
+  if(lockedEl) lockedEl.style.display = eligible ? 'none' : 'block';
+  if(unlockedEl) unlockedEl.style.display = eligible ? 'block' : 'none';
+}
+
+// Respects Settings → Referral program → "Off — hide referral tab". Live, so
+// flipping it off in admin.html removes the tab here without a page reload
+// (and kicks the customer back to Orders if it was the active tab).
+function loadReferralProgramSetting(){
+  db.collection('settings').doc('site').onSnapshot(doc=>{
+    const data = doc.exists ? doc.data() : {};
+    const enabled = data.referralEnabled !== false; // default on, matches admin.js's own default
+    const tabBtn = document.querySelector('.account-tab[data-tab="tabReferral"]');
+    if(!tabBtn) return;
+    tabBtn.style.display = enabled ? '' : 'none';
+    if(!enabled && tabBtn.classList.contains('active')){
+      document.querySelector('.account-tab[data-tab="tabOrders"]').click();
+    }
+  }, err=>console.error('Could not load referral program setting', err));
+}
+
+function loadReferralInfo(user){
+  const linkInput = document.getElementById('referralLinkInput');
+  if(linkInput) linkInput.value = referralLinkFor(user.uid);
+
+  // Live so the balance updates the moment an admin marks a referral rewarded,
+  // without the customer needing to refresh the page.
+  db.collection('users').doc(user.uid).onSnapshot(doc=>{
+    const data = doc.exists ? doc.data() : {};
+    const bal = Number(data.creditBalance||0);
+    const el = document.getElementById('referralCreditBalance');
+    if(el) el.textContent = money(bal);
+  }, err=>console.error('Could not load credit balance', err));
+
+  db.collection('referrals').where('referrerUid','==',user.uid).onSnapshot(snap=>{
+    const refs = [];
+    snap.forEach(doc=> refs.push({id:doc.id, ...doc.data()}));
+    // Sorted client-side (newest first), same reasoning as listenMyOrders.
+    refs.sort((a,b)=>{
+      const ta = a.createdAt && a.createdAt.toMillis ? a.createdAt.toMillis() : 0;
+      const tb = b.createdAt && b.createdAt.toMillis ? b.createdAt.toMillis() : 0;
+      return tb - ta;
+    });
+    renderReferralList(refs);
+  }, err=>{
+    console.error(err);
+    const wrap = document.getElementById('referralList');
+    if(wrap) wrap.innerHTML = '<div class="empty-orders">Could not load your referrals. Please refresh.</div>';
+  });
+}
+
+function renderReferralList(refs){
+  const wrap = document.getElementById('referralList');
+  if(!wrap) return;
+  if(refs.length===0){
+    wrap.innerHTML = '<div class="empty-orders">Nobody yet — share your link above and they\'ll show up here.</div>';
+    return;
+  }
+  wrap.innerHTML = refs.map(r=>{
+    const date = r.createdAt && r.createdAt.toDate ? r.createdAt.toDate().toLocaleDateString() : '—';
+    const rewarded = r.status === 'rewarded';
+    const statusLabel = rewarded ? `Rewarded — ${money(r.rewardAmount||0)}` : 'Pending first order';
+    return `
+    <div class="order-card">
+      <div class="order-card-head">
+        <div>
+          <strong>${esc(r.referredName) || esc(r.referredEmail) || 'New customer'}</strong>
+          <div class="odate">Joined ${date}</div>
+        </div>
+        <span class="pill ${rewarded ? 'pay-verified' : 'pay-submitted'}">${esc(statusLabel)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('copyReferralBtn').addEventListener('click', ()=>{
+  const input = document.getElementById('referralLinkInput');
+  input.select();
+  input.setSelectionRange(0, 99999);
+  const done = ()=> toast('Referral link copied');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(input.value).then(done).catch(()=>{
+      document.execCommand('copy'); done();
+    });
+  } else {
+    document.execCommand('copy'); done();
+  }
+});
+
+// ============================================================
 // ORDER HISTORY (live)
 // ============================================================
 function listenMyOrders(uid){
@@ -95,6 +199,7 @@ function listenMyOrders(uid){
       return tb - ta;
     });
     renderOrders(orders);
+    updateReferralEligibility(orders);
   }, err=>{
     console.error(err);
     document.getElementById('ordersList').innerHTML =
@@ -123,7 +228,7 @@ function renderOrders(orders){
       </div>`;
     const trackingHtml = (o.trackingNumber || o.courier) ? `
       <div class="track-box">
-        📦 <strong>${status==='done' ? 'Delivered' : 'On the way'}</strong>${o.courier ? ' via '+esc(o.courier) : ''}<br>
+        <span class="track-box-head"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg> <strong>${status==='done' ? 'Delivered' : 'On the way'}</strong>${o.courier ? ' via '+esc(o.courier) : ''}</span><br>
         Tracking number: <span class="tnum">${esc(o.trackingNumber)||'—'}</span>
       </div>` : (o.shippingMethod ? `
       <div class="track-box">Preferred courier: <strong>${esc(o.shippingMethod)}</strong></div>` : '');
@@ -142,6 +247,7 @@ function renderOrders(orders){
       <ul class="order-items-list">${itemsHtml}</ul>
       ${progressHtml}
       ${trackingHtml}
+      ${o.creditApplied>0 ? `<div class="order-total-row" style="font-weight:400; font-size:12.5px; color:var(--plum-soft);"><span>Store credit applied</span><span>−${money(o.creditApplied)}</span></div>` : ''}
       <div class="order-total-row"><span>Total</span><span>${money(o.total)}</span></div>
       <div style="font-size:11.5px; color:var(--plum-soft); margin-top:6px;">${esc(payLabel)}</div>
     </div>`;

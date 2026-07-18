@@ -23,6 +23,14 @@ function money(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
+// Placeholder shown wherever a product/settings image hasn't been set yet.
+// Using this instead of an empty src="" avoids the browser treating a blank
+// src as "reload the current page" and showing a broken-image icon.
+const PLACEHOLDER_IMAGE = 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop';
+function productImg(url){
+  return esc(url) || PLACEHOLDER_IMAGE;
+}
+
 // Escapes text before it's dropped into innerHTML. Product names/descriptions
 // and — importantly — customer-submitted checkout fields (name, phone,
 // address, notes) all flow into admin.html and shop.html via innerHTML, so
@@ -191,6 +199,23 @@ async function checkVerificationCode(uid, enteredCode){
   await db.collection('users').doc(uid).update({ emailVerified: true });
   await ref.delete();
   return { ok:true };
+}
+
+// ---------------------------------------------------------------------
+// REFERRAL PROGRAM HELPERS
+// A customer's referral link is just login.html?ref=<their uid> — the
+// new sign-up stamps that uid straight onto their own account doc as
+// referredByUid, so there's no separate code->uid lookup/query needed
+// (which would otherwise require read access to a stranger's user doc).
+// The short "code" shown in the UI is just a friendlier display form of
+// the same uid.
+// ---------------------------------------------------------------------
+function referralCodeFor(uid){
+  return (uid || '').slice(0, 8).toUpperCase();
+}
+function referralLinkFor(uid){
+  const dir = window.location.pathname.replace(/[^/]*$/, '');
+  return `${window.location.origin}${dir}login.html?ref=${uid}`;
 }
 
 // ---------------------------------------------------------------------

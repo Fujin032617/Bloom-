@@ -202,6 +202,15 @@
     </div>
 
     <div class="field"><label>Notes (optional)</label><textarea id="custNotes" placeholder="Anything we should know?"></textarea></div>
+
+    <div class="field" id="creditApplyField" style="display:none;">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:13px;">
+        <input type="checkbox" id="applyCreditCheckbox" style="width:16px; height:16px;">
+        <span id="applyCreditLabel">Apply store credit</span>
+      </label>
+    </div>
+    <div id="checkoutTotalsBox" style="font-size:13.5px; margin:0 0 14px; color:var(--plum-soft);"></div>
+
     <button class="full-btn" id="submitOrderBtn">Send order request</button>
     <div id="checkoutMsg"></div>
   </div>

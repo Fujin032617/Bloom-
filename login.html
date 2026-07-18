@@ -30,18 +30,42 @@
          // admin.html) but can never edit their own document — this stops
          // an admin from accidentally demoting/locking out themselves.
          // Signed-in users may update their OWN doc too, but only to flip
-         // emailVerified — that's what the code-verification step needs.
+         // emailVerified, save their profile info, or spend their own
+         // referral credit at checkout (creditBalance may only go DOWN —
+         // it's only ever increased by an admin, when a referral is
+         // rewarded).
          allow update: if (isAdmin() && request.auth.uid != userId) ||
            (request.auth != null && request.auth.uid == userId &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emailVerified']));
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emailVerified','name','phone','address','creditBalance']) &&
+            (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['creditBalance']) ||
+             request.resource.data.creditBalance <= resource.data.creditBalance));
+       }
+       match /referrals/{refId} {
+         // Created by a brand-new sign-up (referredUid == themselves) when
+         // they arrived via someone else's referral link. Read by either
+         // side of the referral (or an admin). Only an admin can mark one
+         // "rewarded" and credit the referrer.
+         allow create: if request.auth != null && request.resource.data.referredUid == request.auth.uid;
+         allow read: if request.auth != null &&
+           (resource.data.referrerUid == request.auth.uid || resource.data.referredUid == request.auth.uid || isAdmin());
+         allow update, delete: if isAdmin();
        }
        match /products/{productId} {
          allow read: if true;
          allow write: if isAdmin();
        }
        match /orders/{orderId} {
-         allow create: if true;
-         allow read, update, delete: if isAdmin();
+         // Anyone signed in can place an order (checkout in shop.js), and
+         // can't put someone else's uid on it.
+         allow create: if request.auth != null &&
+           (request.resource.data.customerUid == null ||
+            request.resource.data.customerUid == request.auth.uid);
+         // A customer can read only THEIR OWN orders — this is what
+         // account.js's "My orders" tab relies on. Admins can read all.
+         allow read: if isAdmin() ||
+           (request.auth != null && resource.data.customerUid == request.auth.uid);
+         // Only admins change status, tracking, payment verification, etc.
+         allow update, delete: if isAdmin();
        }
        match /stockMovements/{moveId} {
          allow read, write: if isAdmin();
@@ -58,9 +82,41 @@
      }
    }
 
-   Note: this is stricter than before — only accounts with role "admin"
-   can write products/orders/settings now (previously any signed-in
-   customer technically could, if they crafted the request by hand).
+   Note: only accounts with role "admin" can write products/orders/
+   settings (previously any signed-in customer technically could, if they
+   crafted the request by hand). Customers can only create orders under
+   their own uid and read their own order history — not anyone else's.
+
+5b. In Storage -> Rules, paste this (then Publish). This is what actually
+    gates the product-photo / QR-code uploads that wireImageUpload() in
+    firebase-config.js sends to the "products" and "settings" folders:
+
+   rules_version = '2';
+   service firebase.storage {
+     match /b/{bucket}/o {
+       function isAdmin() {
+         return request.auth != null &&
+           firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
+       }
+       function isValidImage() {
+         return request.resource.size < 5 * 1024 * 1024 &&
+           request.resource.contentType.matches('image/.*');
+       }
+       match /products/{fileName} {
+         allow read: if true;
+         allow write: if isAdmin() && isValidImage();
+       }
+       match /settings/{fileName} {
+         allow read: if true;
+         allow write: if isAdmin() && isValidImage();
+       }
+     }
+   }
+
+   Note: firestore.get() inside Storage rules needs the Blaze (pay-as-you-go)
+   plan — still free-tier-eligible for a small shop, but won't work on the
+   free Spark plan. If you're on Spark, use this simpler (less strict)
+   fallback instead: allow write: if request.auth != null && isValidImage();
 
 6. Anyone who signs up on this page becomes a "customer" automatically.
    The FIRST admin has to be promoted by hand: sign up normally, then in
@@ -164,6 +220,15 @@
 <script>
   let mode = 'signin'; // 'signin' | 'signup' | 'reset' | 'verify'
   let pendingUser = null; // set once we're waiting on a verification code
+
+  // ------------------------------------------------------------
+  // REFERRAL CAPTURE
+  // A referral link points here as login.html?ref=<referrer's uid>.
+  // We just hang onto that uid and, if this turns into a sign-up,
+  // stamp it on the new account. No lookup/query needed since the
+  // link already carries the referrer's uid directly.
+  // ------------------------------------------------------------
+  const referrerUid = new URLSearchParams(window.location.search).get('ref') || null;
 
   const modeToggle = document.querySelector('.mode-toggle');
   const modeSignInBtn = document.getElementById('modeSignIn');
@@ -331,11 +396,31 @@
       let userCred;
       if(mode === 'signup'){
         userCred = await auth.createUserWithEmailAndPassword(email, password);
-        await db.collection('users').doc(userCred.user.uid).set({
+        const newUid = userCred.user.uid;
+        // Don't let someone "refer" themselves by revisiting their own link.
+        const validReferrer = referrerUid && referrerUid !== newUid ? referrerUid : null;
+        await db.collection('users').doc(newUid).set({
           email, name, role: 'customer', emailVerified: false,
+          creditBalance: 0,
+          referredByUid: validReferrer,
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
-        pendingUser = { uid: userCred.user.uid, email, name };
+        if(validReferrer){
+          // Tracked separately from the user doc so the referrer can look
+          // up "who I've referred and are they rewarded yet" without
+          // needing read access to other customers' account docs.
+          try{
+            await db.collection('referrals').add({
+              referrerUid: validReferrer,
+              referredUid: newUid,
+              referredName: name,
+              referredEmail: email,
+              status: 'pending',
+              createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+          }catch(refErr){ console.error('Could not record referral', refErr); }
+        }
+        pendingUser = { uid: newUid, email, name };
         // The account + user doc above are already created by this point.
         // If sending the verification email fails (EmailJS down, bad keys,
         // etc.), don't leave the person stuck on a plain error — a retry of
@@ -369,6 +454,12 @@
     }
     submitBtn.disabled = false;
   });
+
+  // A referral link should land people on the sign-up form, not sign-in.
+  if(referrerUid){
+    setMode('signup');
+    formSub.textContent = "You were invited by a friend — sign up to start shopping.";
+  }
 
   // If already signed in, skip straight to the right home page — unless
   // they still need to verify their email, in which case show that screen.

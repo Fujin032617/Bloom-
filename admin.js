@@ -23,6 +23,7 @@ requireRole(['admin'], (user)=>{
   listenOrders();
   listenMovements();
   listenUsers();
+  listenReferrals();
   loadSettingsIntoForm();
 });
 
@@ -116,7 +117,7 @@ function renderAdminProducts(){
     return `
     <tr>
       <td><input type="checkbox" class="product-select-box" data-id="${p.id}" ${checked}></td>
-      <td><div class="row-prod"><img src="${esc(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
+      <td><div class="row-prod"><img src="${productImg(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
       <td>${esc(p.category)||'—'}</td>
       <td>${money(p.price)}</td>
       <td>${discountLabel}</td>
@@ -169,15 +170,32 @@ document.getElementById('bulkClearBtn').addEventListener('click', ()=>{
   selectedProductIds.clear();
   renderAdminProducts();
 });
+// Runs one write per id and reports how many actually succeeded, instead of
+// letting Promise.all reject silently and leave the admin with no feedback
+// and no idea which items (if any) were updated.
+async function runBulkWrites(ids, writeFn){
+  const results = await Promise.allSettled(ids.map(writeFn));
+  const failed = results.filter(r=>r.status==='rejected');
+  return { succeeded: ids.length - failed.length, failed: failed.length, firstError: failed[0] && failed[0].reason };
+}
+
 document.getElementById('bulkFeatureBtn').addEventListener('click', async ()=>{
   const ids = Array.from(selectedProductIds);
-  await Promise.all(ids.map(id=>db.collection('products').doc(id).update({featured:true})));
-  toast(`Marked ${ids.length} product${ids.length===1?'':'s'} as featured`);
+  const { succeeded, failed, firstError } = await runBulkWrites(ids, id=>db.collection('products').doc(id).update({featured:true}));
+  if(failed>0){
+    alert(`Marked ${succeeded} product${succeeded===1?'':'s'} as featured, but ${failed} failed: ${firstError && firstError.message}`);
+  } else {
+    toast(`Marked ${succeeded} product${succeeded===1?'':'s'} as featured`);
+  }
 });
 document.getElementById('bulkUnfeatureBtn').addEventListener('click', async ()=>{
   const ids = Array.from(selectedProductIds);
-  await Promise.all(ids.map(id=>db.collection('products').doc(id).update({featured:false})));
-  toast(`Removed featured from ${ids.length} product${ids.length===1?'':'s'}`);
+  const { succeeded, failed, firstError } = await runBulkWrites(ids, id=>db.collection('products').doc(id).update({featured:false}));
+  if(failed>0){
+    alert(`Removed featured from ${succeeded} product${succeeded===1?'':'s'}, but ${failed} failed: ${firstError && firstError.message}`);
+  } else {
+    toast(`Removed featured from ${succeeded} product${succeeded===1?'':'s'}`);
+  }
 });
 document.getElementById('bulkDiscountBtn').addEventListener('click', async ()=>{
   const raw = prompt('Apply what percent discount to the selected products? (e.g. 15 for 15% off)');
@@ -185,22 +203,30 @@ document.getElementById('bulkDiscountBtn').addEventListener('click', async ()=>{
   const pct = parseFloat(raw);
   if(!pct || pct<=0 || pct>=100){ alert('Enter a percentage between 1 and 99.'); return; }
   const ids = Array.from(selectedProductIds);
-  await Promise.all(ids.map(async id=>{
+  const { succeeded, failed, firstError } = await runBulkWrites(ids, async id=>{
     const p = allProducts.find(x=>x.id===id);
     if(!p) return;
     const basePrice = p.compareAtPrice ? Number(p.compareAtPrice) : Number(p.price);
     const newPrice = Math.round(basePrice * (1 - pct/100) * 100) / 100;
     await db.collection('products').doc(id).update({ compareAtPrice: basePrice, price: newPrice });
-  }));
-  toast(`Applied ${pct}% discount to ${ids.length} product${ids.length===1?'':'s'}`);
+  });
+  if(failed>0){
+    alert(`Applied ${pct}% discount to ${succeeded} product${succeeded===1?'':'s'}, but ${failed} failed: ${firstError && firstError.message}`);
+  } else {
+    toast(`Applied ${pct}% discount to ${succeeded} product${succeeded===1?'':'s'}`);
+  }
 });
 document.getElementById('bulkDeleteBtn').addEventListener('click', async ()=>{
   const ids = Array.from(selectedProductIds);
   if(ids.length===0) return;
   if(!confirm(`Delete ${ids.length} selected product${ids.length===1?'':'s'}? This cannot be undone.`)) return;
-  await Promise.all(ids.map(id=>db.collection('products').doc(id).delete()));
+  const { succeeded, failed, firstError } = await runBulkWrites(ids, id=>db.collection('products').doc(id).delete());
   selectedProductIds.clear();
-  toast('Selected products deleted');
+  if(failed>0){
+    alert(`Deleted ${succeeded} product${succeeded===1?'':'s'}, but ${failed} failed: ${firstError && firstError.message}`);
+  } else {
+    toast('Selected products deleted');
+  }
 });
 
 document.getElementById('bulkRemoveDiscountBtn').addEventListener('click', async ()=>{
@@ -209,11 +235,15 @@ document.getElementById('bulkRemoveDiscountBtn').addEventListener('click', async
     return p && Number(p.compareAtPrice||0) > Number(p.price||0);
   });
   if(ids.length===0){ toast('None of the selected products have a discount'); return; }
-  await Promise.all(ids.map(async id=>{
+  const { succeeded, failed, firstError } = await runBulkWrites(ids, async id=>{
     const p = allProducts.find(x=>x.id===id);
     await db.collection('products').doc(id).update({ price: Number(p.compareAtPrice), compareAtPrice: null });
-  }));
-  toast(`Removed discount from ${ids.length} product${ids.length===1?'':'s'}`);
+  });
+  if(failed>0){
+    alert(`Removed discount from ${succeeded} product${succeeded===1?'':'s'}, but ${failed} failed: ${firstError && firstError.message}`);
+  } else {
+    toast(`Removed discount from ${succeeded} product${succeeded===1?'':'s'}`);
+  }
 });
 async function removeProductDiscount(id){
   const p = allProducts.find(x=>x.id===id);
@@ -287,7 +317,7 @@ function renderInventory(){
       const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? 'Low stock' : 'Healthy');
       return `
       <tr>
-        <td><div class="row-prod"><img src="${esc(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
+        <td><div class="row-prod"><img src="${productImg(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
         <td><strong>${stock}</strong></td>
         <td>${threshold}</td>
         <td><span class="pill ${pillClass}">${pillLabel}</span></td>
@@ -493,7 +523,7 @@ function renderAdminOrders(){
     const options = ORDER_STATUSES.map(s=>`<option value="${s}" ${s===status?'selected':''}>${ORDER_STATUS_LABELS[s]}</option>`).join('');
     const payStatus = o.paymentStatus || (o.paymentMethod ? 'submitted' : 'unpaid');
     const payLabel = payStatus==='verified' ? 'Verified' : (payStatus==='submitted' ? 'Submitted' : 'No payment info');
-    const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : (o.paymentMethod === 'manual' ? 'Manual' : '—'));
+    const methodLabel = o.paymentMethod === 'gcash' ? 'GCash' : (o.paymentMethod === 'bank' ? 'Bank/InstaPay' : (o.paymentMethod === 'manual' ? 'Manual' : (o.paymentMethod === 'credit' ? 'Store credit' : '—')));
     const manualBadge = o.source==='manual' ? `<span class="pill source-manual">Manual sale</span><br>` : '';
     return `
     <tr>
@@ -503,7 +533,8 @@ function renderAdminOrders(){
       <td>
         <span class="pill pay-${payStatus}">${payLabel}</span><br>
         <span style="font-size:11.5px; color:var(--plum-soft);">${methodLabel}${o.paymentReference ? ' · Ref: '+esc(o.paymentReference) : ''}</span><br>
-        ${payStatus!=='verified' && o.paymentMethod ? `<button class="icon-btn" style="margin-top:4px;" onclick="verifyPayment('${o.id}')">Mark verified</button>` : ''}
+        ${o.creditApplied>0 ? `<span style="font-size:11px; color:var(--plum-soft);">Credit used: ${money(o.creditApplied)}</span><br>` : ''}
+        ${payStatus!=='verified' && o.paymentMethod && o.paymentMethod!=='credit' ? `<button class="icon-btn" style="margin-top:4px;" onclick="verifyPayment('${o.id}')">Mark verified</button>` : ''}
       </td>
       <td>
         <select class="order-status-select" onchange="changeOrderStatus('${o.id}', this.value)">${options}</select>
@@ -532,7 +563,7 @@ function openOrderDetails(id){
   const status = order.status || 'new';
   const payStatus = order.paymentStatus || (order.paymentMethod ? 'submitted' : 'unpaid');
   const payLabel = payStatus==='verified' ? 'Verified' : (payStatus==='submitted' ? 'Submitted' : 'No payment info');
-  const methodLabel = order.paymentMethod === 'gcash' ? 'GCash' : (order.paymentMethod === 'bank' ? 'Bank/InstaPay' : '—');
+  const methodLabel = order.paymentMethod === 'gcash' ? 'GCash' : (order.paymentMethod === 'bank' ? 'Bank/InstaPay' : (order.paymentMethod === 'credit' ? 'Store credit' : '—'));
   const itemsHtml = (order.items||[]).map(i=>`<li>${esc(i.qty)}× ${esc(i.name)} — ${money((i.price||0)*(i.qty||0))}</li>`).join('');
   document.getElementById('orderDetailsBody').innerHTML = `
     <div class="two-col" style="margin-bottom:14px;">
@@ -551,6 +582,7 @@ function openOrderDetails(id){
       <div><strong>Payment</strong><br><span class="pill pay-${payStatus}">${payLabel}</span> ${methodLabel}${order.paymentReference ? ' · Ref: '+esc(order.paymentReference) : ''}</div>
       <div><strong>Status</strong><br>${ORDER_STATUS_LABELS[status]||status}</div>
     </div>
+    ${order.creditApplied>0 ? `<div style="margin-bottom:4px;"><strong>Subtotal</strong><br>${money(order.subtotal!=null?order.subtotal:order.total)}</div><div style="margin-bottom:4px; color:var(--plum-soft);">Store credit applied: −${money(order.creditApplied)}</div>` : ''}
     <div><strong>Total</strong><br>${money(order.total)}</div>
   `;
   document.getElementById('orderDetailsOverlay').classList.add('show');
@@ -622,9 +654,12 @@ async function ensureStockDeducted(order, reasonPrefix){
 }
 
 // Reverses a prior deduction (used when an order is marked "Returned to
-// seller") so the items go back into sellable stock. Guarded by
-// `stockRestored` the same way ensureStockDeducted is guarded, so flipping
-// the status dropdown back and forth never double-restocks.
+// seller" OR "Cancelled" after stock had already left the shelf — e.g. a
+// shipped order that later gets cancelled) so the items go back into
+// sellable stock. Guarded by `stockRestored` the same way
+// ensureStockDeducted is guarded, so flipping the status dropdown back and
+// forth never double-restocks. "Damaged" deliberately does NOT restore
+// stock — those items are a write-off, not sellable inventory.
 async function restoreStockForOrder(order, reasonPrefix){
   if(!order.stockDeducted || order.stockRestored) return;
   await db.collection('orders').doc(order.id).update({ stockRestored: true });
@@ -632,6 +667,12 @@ async function restoreStockForOrder(order, reasonPrefix){
     await adjustStock(item.productId, Math.abs(item.qty), `${reasonPrefix||'Returned'} — ${order.customerName||'customer'}`);
   }
 }
+
+// Statuses that hand deducted stock back to inventory. "Returned" is the
+// normal path; "cancelled" is included too so that cancelling an order
+// *after* it already shipped (stock already left the shelf) doesn't
+// silently leave inventory permanently short — see restoreStockForOrder.
+const RESTOCKING_STATUSES = ['returned','cancelled'];
 
 // Handles any status change from the dropdown.
 async function changeOrderStatus(id, newStatus){
@@ -642,21 +683,138 @@ async function changeOrderStatus(id, newStatus){
     const label = newStatus==='shipped' ? 'shipped' : 'fulfilled';
     if(!confirm(`Payment for this order has not been marked verified yet. Mark it ${label} anyway?`)) return;
   }
-  if(newStatus === 'returned' && !order.stockDeducted){
+  if(RESTOCKING_STATUSES.includes(newStatus) && order.stockDeducted && !order.stockRestored){
+    if(!confirm(`This will add the order's items back to stock, since they were already deducted. Mark it as ${ORDER_STATUS_LABELS[newStatus].toLowerCase()} anyway?`)) return;
+  } else if(newStatus === 'returned' && !order.stockDeducted){
     if(!confirm('This order was never marked as shipped/fulfilled, so there is no stock to bring back. Mark it as returned anyway?')) return;
   }
   try{
     if(STOCK_DEDUCTING_STATUSES.includes(newStatus)){
       await ensureStockDeducted(order, newStatus==='shipped' ? 'Order shipped' : 'Order fulfilled');
     }
-    if(newStatus === 'returned'){
-      await restoreStockForOrder(order, 'Returned to seller');
+    if(RESTOCKING_STATUSES.includes(newStatus)){
+      await restoreStockForOrder(order, newStatus==='returned' ? 'Returned to seller' : 'Order cancelled');
     }
     const updateData = { status:newStatus };
     if(newStatus === 'done') updateData.fulfilledAt = firebase.firestore.FieldValue.serverTimestamp();
     await db.collection('orders').doc(id).update(updateData);
     toast(`Order status set to ${ORDER_STATUS_LABELS[newStatus]}`);
+    if(newStatus === 'done'){
+      await processReferralReward({ ...order, id, status:'done' });
+    }
   }catch(err){ alert(err.message); }
+}
+
+// ============================================================
+// REFERRALS
+// ============================================================
+// Rewards the person who referred this order's customer — but only once,
+// the first time that referred customer has any order marked Fulfilled.
+// Guarded by the referral doc's own status ('pending' -> 'rewarded'), so
+// re-fulfilling, editing, or re-triggering this never pays out twice.
+async function processReferralReward(order){
+  if(!order.customerUid) return;
+  try{
+    const refSnap = await db.collection('referrals')
+      .where('referredUid','==',order.customerUid)
+      .where('status','==','pending')
+      .limit(1).get();
+    if(refSnap.empty) return;
+    const refDoc = refSnap.docs[0];
+    const referral = refDoc.data();
+    const referrerRef = db.collection('users').doc(referral.referrerUid);
+    const referrerDoc = await referrerRef.get();
+    if(!referrerDoc.exists) return; // referrer account no longer exists — nothing to credit
+
+    // Referral links only unlock in the UI after a customer's own first
+    // fulfilled order — but the link itself is just their uid, so someone
+    // could still hand it out manually before that. Enforce the same rule
+    // here so an account with no purchase history can never actually be
+    // credited, regardless of how the link was shared.
+    const referrerOrdersSnap = await db.collection('orders').where('customerUid','==',referral.referrerUid).get();
+    const referrerHasPurchaseHistory = referrerOrdersSnap.docs.some(d=>d.data().status==='done');
+    if(!referrerHasPurchaseHistory) return;
+
+    const settingsDoc = await db.collection('settings').doc('site').get();
+    const settingsData = settingsDoc.exists ? settingsDoc.data() : {};
+    if(settingsData.referralEnabled === false) return; // program turned off
+    const rewardAmount = Number(settingsData.referralRewardAmount || 0);
+    if(rewardAmount <= 0) return; // admin hasn't set a reward amount
+
+    await db.runTransaction(async (tx)=>{
+      const freshReferrer = await tx.get(referrerRef);
+      const current = freshReferrer.exists ? Number(freshReferrer.data().creditBalance || 0) : 0;
+      tx.update(referrerRef, { creditBalance: current + rewardAmount });
+      tx.update(refDoc.ref, {
+        status: 'rewarded',
+        rewardAmount,
+        orderId: order.id,
+        rewardedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    });
+    toast(`Referral reward: ${money(rewardAmount)} credited to ${referrerDoc.data().name || referrerDoc.data().email || 'referrer'}`);
+  }catch(err){ console.error('Could not process referral reward', err); }
+}
+
+let allReferrals = [];
+function listenReferrals(){
+  db.collection('referrals').orderBy('createdAt','desc').onSnapshot(snap=>{
+    allReferrals = [];
+    snap.forEach(doc=> allReferrals.push({id:doc.id, ...doc.data()}));
+    renderReferrals();
+  }, err=>console.error(err));
+}
+function renderReferrals(){
+  const body = document.getElementById('adminReferralBody');
+  const statRow = document.getElementById('referralStatRow');
+  if(!body) return;
+  const pending = allReferrals.filter(r=>r.status==='pending').length;
+  const rewarded = allReferrals.filter(r=>r.status==='rewarded');
+  const totalPaid = rewarded.reduce((s,r)=>s+Number(r.rewardAmount||0),0);
+  if(statRow){
+    statRow.innerHTML = `
+      <div class="stat-card"><div class="num">${allReferrals.length}</div><div class="label">Total referrals</div></div>
+      <div class="stat-card"><div class="num">${pending}</div><div class="label">Awaiting first purchase</div></div>
+      <div class="stat-card"><div class="num">${rewarded.length}</div><div class="label">Rewarded</div></div>
+      <div class="stat-card"><div class="num">${money(totalPaid)}</div><div class="label">Total credit issued</div></div>
+    `;
+  }
+  if(allReferrals.length===0){
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--plum-soft); padding:40px;">No referrals yet.</td></tr>`;
+    return;
+  }
+  const usersById = {};
+  allUsers.forEach(u=> usersById[u.id] = u);
+  body.innerHTML = allReferrals.map(r=>{
+    const referrer = usersById[r.referrerUid];
+    const referrerLabel = referrer ? (referrer.name || referrer.email) : r.referrerUid;
+    const date = r.createdAt && r.createdAt.toDate ? r.createdAt.toDate().toLocaleDateString() : '—';
+    const statusClass = r.status==='rewarded' ? 'status-done' : 'status-new';
+    const statusLabel = r.status==='rewarded' ? 'Rewarded' : 'Awaiting purchase';
+    return `
+    <tr>
+      <td>${esc(referrerLabel)||'—'}</td>
+      <td>${esc(r.referredName)||esc(r.referredEmail)||'—'}</td>
+      <td><span class="pill ${statusClass}">${statusLabel}</span></td>
+      <td>${r.rewardAmount ? money(r.rewardAmount) : '—'}</td>
+      <td>${date}</td>
+    </tr>`;
+  }).join('');
+  renderCreditBalances();
+}
+function renderCreditBalances(){
+  const body = document.getElementById('adminCreditBody');
+  if(!body) return;
+  const withCredit = allUsers.filter(u=>Number(u.creditBalance||0) > 0);
+  if(withCredit.length===0){
+    body.innerHTML = `<tr><td colspan="2" style="text-align:center; color:var(--plum-soft); padding:30px;">No customers currently hold store credit.</td></tr>`;
+    return;
+  }
+  body.innerHTML = withCredit.map(u=>`
+    <tr>
+      <td><strong>${esc(u.name)||'—'}</strong><br><span style="color:var(--plum-soft); font-size:12px;">${esc(u.email)}</span></td>
+      <td>${money(u.creditBalance)}</td>
+    </tr>`).join('');
 }
 
 // Deletes an order/sale record entirely — e.g. a duplicate, a mistake, or a
@@ -875,6 +1033,24 @@ if(saveManualSaleBtn) saveManualSaleBtn.addEventListener('click', async ()=>{
     msg.innerHTML = '<div class="form-msg err">Add at least one item with a quantity.</div>';
     return;
   }
+  // Same product can be picked more than once across rows — combine
+  // quantities per product before checking against current stock, so two
+  // rows of the same item can't each pass a per-row check while together
+  // overselling it.
+  const qtyByProduct = {};
+  validItems.forEach(it=>{ qtyByProduct[it.productId] = (qtyByProduct[it.productId]||0) + Number(it.qty); });
+  for(const productId of Object.keys(qtyByProduct)){
+    const p = allProducts.find(x=>x.id===productId);
+    if(!p){
+      msg.innerHTML = '<div class="form-msg err">One of the selected products no longer exists — please remove it.</div>';
+      return;
+    }
+    const available = Number(p.stock||0);
+    if(qtyByProduct[productId] > available){
+      msg.innerHTML = `<div class="form-msg err">Only ${available} of "${esc(p.name)}" in stock — please adjust the quantity.</div>`;
+      return;
+    }
+  }
   const items = validItems.map(it=>{
     const p = allProducts.find(x=>x.id===it.productId);
     return { productId: it.productId, name: p ? p.name : 'Unknown item', price: Number(it.price||0), costPrice: p ? Number(p.costPrice||0) : 0, qty: Number(it.qty) };
@@ -915,7 +1091,7 @@ function renderMarqueeList(){
   } else {
     wrap.innerHTML = marqueeMessages.map((msg,i)=>`
       <div class="repeat-row">
-        <div class="field"><label>Message ${i+1}</label><input type="text" class="marquee-input" data-i="${i}" value="${(msg||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Message ${i+1}</label><input type="text" class="marquee-input" data-i="${i}" value="${esc(msg)}"></div>
         <button type="button" class="remove-row-btn" onclick="removeMarqueeMsg(${i})">Remove</button>
       </div>`).join('');
   }
@@ -936,8 +1112,8 @@ function renderTestimonialList(){
   } else {
     wrap.innerHTML = testimonials.map((t,i)=>`
       <div class="repeat-row" style="flex-wrap:wrap;">
-        <div class="field" style="min-width:140px;"><label>Name</label><input type="text" class="test-name" data-i="${i}" value="${(t.name||'').replace(/"/g,'&quot;')}"></div>
-        <div class="field" style="min-width:140px;"><label>Meta (e.g. "Verified order")</label><input type="text" class="test-meta" data-i="${i}" value="${(t.meta||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field" style="min-width:140px;"><label>Name</label><input type="text" class="test-name" data-i="${i}" value="${esc(t.name)}"></div>
+        <div class="field" style="min-width:140px;"><label>Meta (e.g. "Verified order")</label><input type="text" class="test-meta" data-i="${i}" value="${esc(t.meta)}"></div>
         <div class="field" style="flex-basis:100%;"><label>Quote</label><textarea class="test-quote" data-i="${i}">${esc(t.quote)}</textarea></div>
         <button type="button" class="remove-row-btn" onclick="removeTestimonial(${i})">Remove</button>
       </div>`).join('');
@@ -975,6 +1151,8 @@ async function loadSettingsIntoForm(){
     document.getElementById('setPopupFrequency').value = s.popupFrequency || 'session';
     document.getElementById('setTawkPropertyId').value = s.tawkPropertyId || '';
     document.getElementById('setTawkWidgetId').value = s.tawkWidgetId || '';
+    document.getElementById('setReferralReward').value = s.referralRewardAmount != null ? s.referralRewardAmount : 100;
+    document.getElementById('setReferralEnabled').value = s.referralEnabled === false ? 'false' : 'true';
     wireImageUpload({ fileInputId:'setHeroImageFile', previewId:'setHeroImagePreview', urlFieldId:'setHeroImage', progressId:'setHeroImageProgress', folder:'settings', existingUrl: s.heroImage||'' });
     wireImageUpload({ fileInputId:'setAboutImageFile', previewId:'setAboutImagePreview', urlFieldId:'setAboutImage', progressId:'setAboutImageProgress', folder:'settings', existingUrl: s.aboutImage||'' });
     wireImageUpload({ fileInputId:'setGcashQRFile', previewId:'setGcashQRPreview', urlFieldId:'setGcashQR', progressId:'setGcashQRProgress', folder:'settings', existingUrl: s.gcashQR||'' });
@@ -1030,6 +1208,8 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
     popupFrequency: document.getElementById('setPopupFrequency').value,
     tawkPropertyId: document.getElementById('setTawkPropertyId').value.trim(),
     tawkWidgetId: document.getElementById('setTawkWidgetId').value.trim(),
+    referralRewardAmount: parseFloat(document.getElementById('setReferralReward').value) || 0,
+    referralEnabled: document.getElementById('setReferralEnabled').value === 'true',
   };
   try{
     await db.collection('settings').doc('site').set(data, {merge:true});
@@ -1048,6 +1228,7 @@ function listenUsers(){
     allUsers = [];
     snap.forEach(doc=> allUsers.push({id:doc.id, ...doc.data()}));
     renderUsers();
+    renderCreditBalances();
   }, err=>console.error(err));
 }
 function renderUsers(){

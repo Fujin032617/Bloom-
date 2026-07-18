@@ -16,6 +16,7 @@ let sortBy = 'newest';
 let searchTerm = '';
 let siteSettings = {};
 let selectedPayMethod = null;
+let userCreditBalance = 0; // this customer's referral store credit, kept live
 
 // ============================================================
 // CART PERSISTENCE (localStorage)
@@ -77,7 +78,18 @@ requireRole(['customer','admin'], (user, role)=>{
 
   listenProducts();
   loadSiteSettings();
+  listenUserCredit(user.uid);
 });
+
+// Live so a reward credited by the admin (or a previous order that used some
+// credit) is always reflected before the customer checks out again.
+function listenUserCredit(uid){
+  db.collection('users').doc(uid).onSnapshot(doc=>{
+    const data = doc.exists ? doc.data() : {};
+    userCreditBalance = Number(data.creditBalance||0);
+    updateCreditUI();
+  }, err=>console.error('Could not load credit balance', err));
+}
 
 async function loadSiteSettings(){
   try{
@@ -150,7 +162,7 @@ function renderCategorySlider(){
   wrap.style.display = '';
   track.innerHTML = cats.map(c=>{
     const sample = allProducts.find(p=>p.category===c && p.imageUrl) || allProducts.find(p=>p.category===c);
-    const img = sample && sample.imageUrl ? esc(sample.imageUrl) : 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop';
+    const img = sample ? productImg(sample.imageUrl) : PLACEHOLDER_IMAGE;
     return `
     <div class="cat-card" data-cat="${esc(c)}">
       <img src="${img}" alt="${esc(c)}" loading="lazy">
@@ -230,7 +242,7 @@ function renderProductGrid(){
       <div class="img-wrap" onclick="openProductModal('${p.id}')">
         ${p.featured ? '<span class="badge">Bestseller</span>' : ''}
         <span class="stock-badge">${stockLabel}</span>
-        <img src="${esc(p.imageUrl) || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?q=80&w=800&auto=format&fit=crop'}" alt="${esc(p.name)}" loading="lazy">
+        <img src="${productImg(p.imageUrl)}" alt="${esc(p.name)}" loading="lazy">
         <button class="quick-add" ${stock<=0?'disabled style="opacity:.5;cursor:not-allowed;bottom:10px;"':''} onclick="addToCart('${p.id}', event)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
           ${stock<=0?'Sold out':'Quick add'}
@@ -269,7 +281,7 @@ function openProductModal(id){
   document.getElementById('productModal').innerHTML = `
     <button class="close-x" onclick="closeProductModal()">✕</button>
     <div class="product-modal-grid">
-      <img src="${esc(p.imageUrl)}" alt="${esc(p.name)}">
+      <img src="${productImg(p.imageUrl)}" alt="${esc(p.name)}">
       <div>
         <div class="card-cat-row"><div class="card-cat">${esc(p.category)||'Skincare'}</div>${p.unit ? `<div class="card-unit">${esc(p.unit)}</div>` : ''}</div>
         <h2 style="font-weight:500; margin:6px 0 10px;">${esc(p.name)}</h2>
@@ -339,7 +351,7 @@ function renderCart(){
     subtotal += lineTotal;
     return `
     <div class="cart-item">
-      <img src="${esc(p.imageUrl)}" alt="${esc(p.name)}">
+      <img src="${productImg(p.imageUrl)}" alt="${esc(p.name)}">
       <div class="cart-item-info">
         <h5>${esc(p.name)}</h5>
         <div style="font-size:12.5px; color:var(--plum-soft);">${money(p.price)} each</div>
@@ -354,6 +366,7 @@ function renderCart(){
   }).join('');
   document.getElementById('cartSubtotal').textContent = money(subtotal);
   document.getElementById('checkoutBtn').disabled = false;
+  updateCheckoutTotals();
 }
 
 document.getElementById('cartOpenBtn').addEventListener('click', ()=>{
@@ -373,8 +386,43 @@ document.getElementById('overlay').addEventListener('click', closeCart);
 document.getElementById('checkoutBtn').addEventListener('click', ()=>{
   if(Object.keys(cart).length===0) return;
   resetPaymentPicker();
+  const creditBox = document.getElementById('applyCreditCheckbox');
+  if(creditBox) creditBox.checked = false;
+  updateCreditUI();
   document.getElementById('checkoutModalOverlay').classList.add('show');
 });
+
+// ============================================================
+// STORE CREDIT (referral rewards) AT CHECKOUT
+// ============================================================
+function currentCartSubtotal(){
+  return Object.keys(cart).reduce((sum,id)=>{
+    const p = allProducts.find(x=>x.id===id);
+    return p ? sum + Number(p.price||0)*cart[id] : sum;
+  }, 0);
+}
+function updateCreditUI(){
+  const field = document.getElementById('creditApplyField');
+  if(!field) return;
+  field.style.display = userCreditBalance > 0 ? 'block' : 'none';
+  const label = document.getElementById('applyCreditLabel');
+  if(label) label.textContent = `Apply store credit (${money(userCreditBalance)} available)`;
+  updateCheckoutTotals();
+}
+function updateCheckoutTotals(){
+  const box = document.getElementById('checkoutTotalsBox');
+  if(!box) return;
+  const subtotal = currentCartSubtotal();
+  const checkbox = document.getElementById('applyCreditCheckbox');
+  const wantsCredit = checkbox ? checkbox.checked : false;
+  const creditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal) : 0;
+  const total = Math.max(0, subtotal - creditApplied);
+  box.innerHTML = creditApplied > 0
+    ? `Subtotal ${money(subtotal)} − credit ${money(creditApplied)} = <strong style="color:var(--plum);">${money(total)}</strong>`
+    : `Total: <strong style="color:var(--plum);">${money(subtotal)}</strong>`;
+}
+const applyCreditCheckboxEl = document.getElementById('applyCreditCheckbox');
+if(applyCreditCheckboxEl) applyCreditCheckboxEl.addEventListener('change', updateCheckoutTotals);
 document.getElementById('checkoutCloseBtn').addEventListener('click', ()=>{
   document.getElementById('checkoutModalOverlay').classList.remove('show');
 });
@@ -442,14 +490,6 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     msgBox.innerHTML = '<div class="form-msg err">Please choose a courier.</div>';
     return;
   }
-  if(!selectedPayMethod){
-    msgBox.innerHTML = '<div class="form-msg err">Please choose how you\'ll pay (GCash or Bank/InstaPay).</div>';
-    return;
-  }
-  if(!paymentRef){
-    msgBox.innerHTML = '<div class="form-msg err">Please enter the reference number from your payment so we can verify it.</div>';
-    return;
-  }
   // Stock can change (or a product can be removed) between adding to cart
   // and checking out — re-validate against current data before sending.
   for(const id of Object.keys(cart)){
@@ -468,19 +508,70 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     const p = allProducts.find(x=>x.id===id);
     return { productId:id, name:p.name, price:p.price, costPrice:Number(p.costPrice||0), qty:cart[id] };
   });
-  const total = items.reduce((s,i)=>s+i.price*i.qty,0);
+  const subtotal = items.reduce((s,i)=>s+i.price*i.qty,0);
+  const creditCheckbox = document.getElementById('applyCreditCheckbox');
+  const wantsCredit = creditCheckbox ? creditCheckbox.checked : false;
+  // Best-effort preview using the live-synced balance — the actual amount
+  // deducted is re-checked against the real balance inside the transaction
+  // below so a stale balance in the browser can never overspend it.
+  const previewCreditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal) : 0;
+  const previewTotal = Math.max(0, subtotal - previewCreditApplied);
+  const paymentNeeded = previewTotal > 0;
+
+  if(paymentNeeded && !selectedPayMethod){
+    msgBox.innerHTML = '<div class="form-msg err">Please choose how you\'ll pay (GCash or Bank/InstaPay).</div>';
+    return;
+  }
+  if(paymentNeeded && !paymentRef){
+    msgBox.innerHTML = '<div class="form-msg err">Please enter the reference number from your payment so we can verify it.</div>';
+    return;
+  }
 
   const btn = document.getElementById('submitOrderBtn');
   btn.disabled = true; btn.textContent = 'Sending...';
   try{
-    await db.collection('orders').add({
-      customerName:name, email, phone, address, shippingMethod, notes, items, total,
-      customerUid: auth.currentUser ? auth.currentUser.uid : null,
-      paymentMethod: selectedPayMethod,
-      paymentReference: paymentRef,
-      paymentStatus: 'submitted',
-      status:'new', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    const uid = auth.currentUser ? auth.currentUser.uid : null;
+    const orderRef = db.collection('orders').doc();
+
+    // Runs as a transaction so a stale/cached balance can never let someone
+    // spend more credit than they actually have, and so the order is never
+    // created without its credit deduction (or vice versa).
+    await db.runTransaction(async (tx)=>{
+      let creditApplied = 0;
+      let userRef = null;
+      let freshBalance = 0;
+      if(uid && wantsCredit){
+        userRef = db.collection('users').doc(uid);
+        const userDoc = await tx.get(userRef);
+        freshBalance = userDoc.exists ? Number(userDoc.data().creditBalance||0) : 0;
+        creditApplied = Math.min(freshBalance, subtotal);
+      }
+      const total = Math.max(0, subtotal - creditApplied);
+      const fullyCoveredByCredit = total <= 0;
+
+      // Guards against the rare case where the balance changed between the
+      // preview above and this transaction's real read (e.g. a second tab,
+      // or credit spent moments earlier) — without this, an order could be
+      // created expecting payment with no payment method/reference on file,
+      // since those fields were skipped as "not needed" in the preview.
+      if(!fullyCoveredByCredit && (!selectedPayMethod || !paymentRef)){
+        throw new Error('CREDIT_BALANCE_CHANGED');
+      }
+
+      if(creditApplied > 0){
+        tx.update(userRef, { creditBalance: freshBalance - creditApplied });
+      }
+      tx.set(orderRef, {
+        customerName:name, email, phone, address, shippingMethod, notes,
+        items, subtotal, creditApplied, total,
+        customerUid: uid,
+        paymentMethod: fullyCoveredByCredit ? (selectedPayMethod || 'credit') : selectedPayMethod,
+        paymentReference: paymentRef || null,
+        paymentStatus: fullyCoveredByCredit ? 'verified' : 'submitted',
+        status:'new', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
     });
+
     msgBox.innerHTML = '<div class="form-msg ok">Order request sent! We will verify your payment and confirm shortly.</div>';
     cart = {};
     saveCart();
@@ -496,10 +587,16 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       document.getElementById('custShippingMethod').value='';
       document.getElementById('custNotes').value='';
       resetPaymentPicker();
+      if(creditCheckbox) creditCheckbox.checked = false;
     }, 1800);
   }catch(err){
     console.error(err);
-    msgBox.innerHTML = '<div class="form-msg err">Something went wrong sending your order. Please try again.</div>';
+    if(err && err.message === 'CREDIT_BALANCE_CHANGED'){
+      msgBox.innerHTML = '<div class="form-msg err">Your store credit balance just changed and no longer fully covers this order — please choose a payment method for the remaining amount and try again.</div>';
+      updateCreditUI();
+    } else {
+      msgBox.innerHTML = '<div class="form-msg err">Something went wrong sending your order. Please try again.</div>';
+    }
   }
   btn.disabled = false; btn.textContent = 'Send order request';
 });
