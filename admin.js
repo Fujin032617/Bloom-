@@ -9,6 +9,7 @@ let allProducts = [];
 let adminSearchTerm = '';
 let editingProductId = null;
 let selectedProductIds = new Set();
+let bundleItemsDraft = []; // [{productId, qty}] while the edit-product modal is open in bundle mode
 
 // ============================================================
 // AUTH GATE
@@ -71,9 +72,12 @@ function listenProducts(){
 
 function renderStats(){
   const total = allProducts.length;
-  const outOfStock = allProducts.filter(p=>Number(p.stock||0)<=0).length;
+  const outOfStock = allProducts.filter(p=>availableStock(p, allProducts)<=0).length;
   const featured = allProducts.filter(p=>p.featured).length;
-  const value = allProducts.reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
+  // Bundles are excluded from inventory value — their value is already
+  // counted once under the component products they're made of, so adding
+  // the bundle's own price×availability on top would double-count it.
+  const value = allProducts.filter(p=>!p.isBundle).reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
   document.getElementById('statRow').innerHTML = `
     <div class="stat-card"><div class="num">${total}</div><div class="label">Total products</div></div>
     <div class="stat-card"><div class="num">${outOfStock}</div><div class="label">Out of stock</div></div>
@@ -101,7 +105,9 @@ function renderAdminProducts(){
     return;
   }
   body.innerHTML = rows.map(p=>{
-    const stock = Number(p.stock||0);
+    // For bundles, "stock" is computed live from component products rather
+    // than read off the product doc (bundles never store their own stock).
+    const stock = availableStock(p, allProducts);
     const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
     const pillClass = stock<=0 ? 'out' : (stock<=threshold ? 'low' : 'in');
     const pillLabel = stock<=0 ? 'Out of stock' : (stock<=threshold ? stock+' left' : stock+' in stock');
@@ -114,10 +120,12 @@ function renderAdminProducts(){
     const hasDiscount = compareAt > price;
     const discountPct = hasDiscount ? Math.round((1 - price/compareAt) * 100) : 0;
     const discountLabel = hasDiscount ? `<span class="pill low">-${discountPct}%</span>` : '—';
+    const bundleBadge = p.isBundle ? `<br><span class="pill in" style="margin-top:4px;">Bundle</span>` : '';
+    const bundleContents = p.isBundle ? `<div style="font-size:11px; color:var(--plum-soft); margin-top:2px;">${esc(bundleContentsLabel(p, allProducts))}</div>` : '';
     return `
     <tr>
       <td><input type="checkbox" class="product-select-box" data-id="${p.id}" ${checked}></td>
-      <td><div class="row-prod"><img src="${productImg(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
+      <td><div class="row-prod"><img src="${productImg(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}${bundleContents}</div>${bundleBadge}</td>
       <td>${esc(p.category)||'—'}</td>
       <td>${money(p.price)}</td>
       <td>${discountLabel}</td>
@@ -255,7 +263,41 @@ async function removeProductDiscount(id){
 }
 
 async function deleteProduct(id){
-  if(!confirm('Delete this product? This cannot be undone.')) return;
+  const product = allProducts.find(p=>p.id===id);
+
+  // Check if this product is a component of any bundle. A bundle has no
+  // stock of its own — its availability is computed live from its
+  // components (see bundleAvailableQty in firebase-config.js) — so
+  // deleting a component here would silently make that bundle permanently
+  // unsellable (0 available forever) with no clue why.
+  const dependentBundles = allProducts.filter(p =>
+    p.isBundle && Array.isArray(p.bundleItems) && p.bundleItems.some(bi => bi.productId === id)
+  );
+
+  // Check if this product has stock tied up in an order that hasn't been
+  // shipped/fulfilled yet. If that order later gets marked "Shipped," its
+  // stock deduction for this line item will silently fail (the product
+  // won't exist to deduct from) and can never be retried — the order's
+  // stockDeducted flag gets set regardless, guarding against a retry.
+  let dependentOrderCount = 0;
+  try{
+    const openOrders = (window._orders||[]).filter(o => !['done','cancelled','returned','damaged'].includes(o.status||'new'));
+    dependentOrderCount = openOrders.filter(o => (o.items||[]).some(i => i.productId === id)).length;
+  }catch(e){ /* window._orders may not be loaded yet — skip this check */ }
+
+  let warning = '';
+  if(dependentBundles.length){
+    warning += `\n\nThis product is used in ${dependentBundles.length} bundle${dependentBundles.length===1?'':'s'} (${dependentBundles.map(b=>b.name).join(', ')}). Deleting it will make ${dependentBundles.length===1?'that bundle':'those bundles'} permanently show 0 available.`;
+  }
+  if(dependentOrderCount){
+    warning += `\n\nThis product also appears in ${dependentOrderCount} open (not yet shipped/fulfilled) order${dependentOrderCount===1?'':'s'}. If ${dependentOrderCount===1?'that order is':'those orders are'} later marked Shipped, stock for this item won't be deducted correctly.`;
+  }
+
+  const msg = warning
+    ? `Delete "${product ? product.name : 'this product'}"?${warning}\n\nDelete anyway?`
+    : 'Delete this product? This cannot be undone.';
+  if(!confirm(msg)) return;
+
   try{
     await db.collection('products').doc(id).delete();
     toast('Product deleted');
@@ -280,12 +322,14 @@ function listenMovements(){
 async function adjustStock(productId, delta, reason){
   const productRef = db.collection('products').doc(productId);
   try{
-    let newStock, productName;
+    let newStock, productName, wentNegative;
     await db.runTransaction(async (tx)=>{
       const doc = await tx.get(productRef);
       if(!doc.exists) throw new Error('Product no longer exists');
       const current = Number(doc.data().stock||0);
-      newStock = Math.max(0, current + delta);
+      const raw = current + delta;
+      wentNegative = raw < 0;
+      newStock = Math.max(0, raw);
       productName = doc.data().name;
       tx.update(productRef, {stock:newStock});
     });
@@ -293,7 +337,17 @@ async function adjustStock(productId, delta, reason){
       productId, productName, qtyChange:delta, reason: reason||'Manual adjustment',
       resultingStock:newStock, createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
-    toast(delta>=0 ? `Added ${delta} to stock` : `Removed ${Math.abs(delta)} from stock`);
+    if(wentNegative){
+      // More units were deducted than were actually in stock — e.g. two
+      // orders for the last item were both marked "Shipped" before either
+      // deduction caught up with the other. Stock is still floored at 0
+      // (never goes negative in Firestore), but the admin needs to know
+      // they're oversold so they can follow up on whichever order can't
+      // actually be fulfilled.
+      toast(`⚠️ "${productName}" is oversold — stock floored at 0. Check recent orders for this item.`);
+    } else {
+      toast(delta>=0 ? `Added ${delta} to stock` : `Removed ${Math.abs(delta)} from stock`);
+    }
   }catch(err){ alert(err.message); }
 }
 
@@ -307,10 +361,16 @@ function quickAdjust(productId, sign){
 function renderInventory(){
   const body = document.getElementById('adminInventoryBody');
   if(!body) return;
-  if(allProducts.length===0){
+  // Bundles don't get a row here with +/- buttons — there's nothing to
+  // manually restock, since their availability is derived from the
+  // component products (which DO show up here, with their own controls).
+  // They're listed separately below as a read-only reference instead.
+  const singleProducts = allProducts.filter(p=>!p.isBundle);
+  const bundles = allProducts.filter(p=>p.isBundle);
+  if(singleProducts.length===0){
     body.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--plum-soft); padding:40px;">No products yet — add one from the Products tab first.</td></tr>`;
   } else {
-    body.innerHTML = allProducts.map(p=>{
+    body.innerHTML = singleProducts.map(p=>{
       const stock = Number(p.stock||0);
       const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
       const pillClass = stock<=0 ? 'out' : (stock<=threshold ? 'low' : 'in');
@@ -331,15 +391,34 @@ function renderInventory(){
       </tr>`;
     }).join('');
   }
+  if(bundles.length>0){
+    body.innerHTML += `<tr><td colspan="5" style="padding-top:18px; padding-bottom:6px; color:var(--plum-soft); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px;">Bundles (stock comes from the components above)</td></tr>`;
+    body.innerHTML += bundles.map(p=>{
+      const stock = availableStock(p, allProducts);
+      const pillClass = stock<=0 ? 'out' : 'in';
+      const pillLabel = stock<=0 ? 'Out of stock' : `${stock} assemblable now`;
+      return `
+      <tr>
+        <td><div class="row-prod"><img src="${productImg(p.imageUrl)}" alt="">${esc(p.name)||'Untitled'}</div></td>
+        <td><strong>${stock}</strong></td>
+        <td>—</td>
+        <td><span class="pill ${pillClass}">${pillLabel}</span></td>
+        <td style="color:var(--plum-soft); font-size:12px;">Edit the bundle's items in the Products tab to change this.</td>
+      </tr>`;
+    }).join('');
+  }
 
-  const totalUnits = allProducts.reduce((s,p)=>s+Number(p.stock||0),0);
-  const lowCount = allProducts.filter(p=>{
+  // Totals only count real (non-bundle) products — a bundle's units/value
+  // are already counted once under its components, so including bundles
+  // here too would double-count both.
+  const totalUnits = singleProducts.reduce((s,p)=>s+Number(p.stock||0),0);
+  const lowCount = singleProducts.filter(p=>{
     const stock = Number(p.stock||0);
     const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
     return stock>0 && stock<=threshold;
   }).length;
-  const outCount = allProducts.filter(p=>Number(p.stock||0)<=0).length;
-  const invValue = allProducts.reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
+  const outCount = singleProducts.filter(p=>Number(p.stock||0)<=0).length;
+  const invValue = singleProducts.reduce((s,p)=>s+(Number(p.price||0)*Number(p.stock||0)),0);
   document.getElementById('inventoryStatRow').innerHTML = `
     <div class="stat-card"><div class="num">${totalUnits}</div><div class="label">Units in stock</div></div>
     <div class="stat-card"><div class="num">${lowCount}</div><div class="label">Low stock items</div></div>
@@ -390,6 +469,12 @@ function openEditModal(id){
   document.getElementById('editFeatured').value = p && p.featured ? 'true' : 'false';
   document.getElementById('editDescription').value = p ? p.description||'' : '';
   document.getElementById('editMsg').innerHTML = '';
+
+  document.getElementById('editIsBundle').value = p && p.isBundle ? 'true' : 'false';
+  bundleItemsDraft = (p && Array.isArray(p.bundleItems)) ? p.bundleItems.map(c=>({productId:c.productId, qty:Number(c.qty||1)})) : [];
+  applyBundleModeUI();
+  renderBundleItemRows();
+
   wireImageUpload({
     fileInputId:'editImageFile', previewId:'editImagePreview', urlFieldId:'editImage',
     progressId:'editImageProgress', folder:'products', existingUrl: p ? p.imageUrl||'' : ''
@@ -401,6 +486,95 @@ document.getElementById('addProductBtn').addEventListener('click', ()=>openEditM
 document.getElementById('editCloseBtn').addEventListener('click', ()=>{
   document.getElementById('editModalOverlay').classList.remove('show');
 });
+
+// ------------------------------------------------------------
+// Bundle / package editor (inside the add/edit product modal)
+// A bundle has no stock field of its own — swap the stock inputs out for
+// the "what's inside" editor whenever "Product type" is set to Bundle.
+// ------------------------------------------------------------
+function applyBundleModeUI(){
+  const isBundle = document.getElementById('editIsBundle').value === 'true';
+  document.getElementById('singleStockFields').style.display = isBundle ? 'none' : 'grid';
+  document.getElementById('bundleItemsFields').style.display = isBundle ? 'block' : 'none';
+}
+document.getElementById('editIsBundle').addEventListener('change', ()=>{
+  applyBundleModeUI();
+  renderBundleItemRows();
+});
+
+function addBundleItemRow(){
+  // Bundles can only contain real, single-stock products — not other
+  // bundles, to keep stock math from having to recurse.
+  const candidates = allProducts.filter(x=>!x.isBundle);
+  const first = candidates[0];
+  bundleItemsDraft.push({ productId: first ? first.id : '', qty: 1 });
+  renderBundleItemRows();
+}
+document.getElementById('addBundleItemBtn').addEventListener('click', addBundleItemRow);
+
+function removeBundleItemRow(i){
+  bundleItemsDraft.splice(i,1);
+  renderBundleItemRows();
+}
+
+function renderBundleItemRows(){
+  const wrap = document.getElementById('bundleItemsList');
+  if(!wrap) return;
+  const candidates = allProducts.filter(x=>!x.isBundle);
+  if(candidates.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">Add some regular products first — a bundle is made of those.</p>`;
+  } else if(bundleItemsDraft.length===0){
+    wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No items yet — add one below.</p>`;
+  } else {
+    wrap.innerHTML = bundleItemsDraft.map((it,i)=>{
+      const options = candidates.map(x=>`<option value="${x.id}" ${x.id===it.productId?'selected':''}>${esc(x.name)||'Untitled'}</option>`).join('');
+      return `
+      <div class="repeat-row">
+        <div class="field" style="flex:2;"><label>Product</label><select class="bundle-item-product" data-i="${i}">${options}</select></div>
+        <div class="field" style="max-width:90px;"><label>Qty</label><input type="number" min="1" class="bundle-item-qty" data-i="${i}" value="${it.qty}"></div>
+        <button type="button" class="remove-row-btn" onclick="removeBundleItemRow(${i})">Remove</button>
+      </div>`;
+    }).join('');
+  }
+  wrap.querySelectorAll('.bundle-item-product').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      bundleItemsDraft[Number(sel.dataset.i)].productId = sel.value;
+      updateBundlePreview();
+    });
+  });
+  wrap.querySelectorAll('.bundle-item-qty').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      bundleItemsDraft[Number(inp.dataset.i)].qty = parseInt(inp.value)||1;
+      updateBundlePreview();
+    });
+  });
+  updateBundlePreview();
+}
+
+function updateBundlePreview(){
+  const availEl = document.getElementById('bundleAvailablePreview');
+  const costEl = document.getElementById('bundleCostSuggestion');
+  const useCostBtn = document.getElementById('useBundleCostBtn');
+  if(!availEl) return;
+  const validItems = bundleItemsDraft.filter(it=>it.productId);
+  if(validItems.length===0){
+    availEl.textContent = '';
+    costEl.textContent = '';
+    useCostBtn.style.display = 'none';
+    return;
+  }
+  const fakeBundle = { isBundle:true, bundleItems: validItems };
+  const avail = bundleAvailableQty(fakeBundle, allProducts);
+  availEl.textContent = `Could assemble ${avail} of this bundle right now, based on current component stock.`;
+
+  const suggestedCost = validItems.reduce((s,it)=>{
+    const cp = allProducts.find(x=>x.id===it.productId);
+    return s + (cp ? Number(cp.costPrice||0) : 0) * Number(it.qty||0);
+  }, 0);
+  costEl.textContent = `Sum of component cost prices: ${money(suggestedCost)}`;
+  useCostBtn.style.display = 'inline-block';
+  useCostBtn.onclick = ()=>{ document.getElementById('editCostPrice').value = suggestedCost.toFixed(2); };
+}
 
 // ------------------------------------------------------------
 // Quick discount controls (inside the add/edit product modal)
@@ -452,23 +626,44 @@ document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
   const name = document.getElementById('editName').value.trim();
   const category = document.getElementById('editCategory').value.trim();
   const unit = document.getElementById('editUnit').value.trim();
-  const price = parseFloat(document.getElementById('editPrice').value) || 0;
+  const price = Math.max(0, parseFloat(document.getElementById('editPrice').value) || 0);
   const costPriceRaw = document.getElementById('editCostPrice').value.trim();
-  const costPrice = costPriceRaw ? parseFloat(costPriceRaw) : 0;
+  const costPrice = costPriceRaw ? Math.max(0, parseFloat(costPriceRaw) || 0) : 0;
   const compareAtPriceRaw = document.getElementById('editCompareAtPrice').value.trim();
-  const compareAtPrice = compareAtPriceRaw ? parseFloat(compareAtPriceRaw) : null;
-  const stock = parseInt(document.getElementById('editStock').value) || 0;
+  const compareAtPrice = compareAtPriceRaw ? Math.max(0, parseFloat(compareAtPriceRaw) || 0) : null;
   const featured = document.getElementById('editFeatured').value === 'true';
   const imageUrl = document.getElementById('editImage').value.trim();
   const description = document.getElementById('editDescription').value.trim();
   const msg = document.getElementById('editMsg');
+  const isBundle = document.getElementById('editIsBundle').value === 'true';
 
   if(!name || !price){
     msg.innerHTML = '<div class="form-msg err">Product name and price are required.</div>';
     return;
   }
-  const lowStock = parseInt(document.getElementById('editLowStock').value) || 5;
-  const data = { name, category, unit, price, costPrice, compareAtPrice, stock, lowStock, featured, imageUrl, description };
+
+  let data;
+  if(isBundle){
+    const items = bundleItemsDraft
+      .filter(it=>it.productId && Number(it.qty)>0)
+      .map(it=>{
+        const cp = allProducts.find(x=>x.id===it.productId);
+        return { productId: it.productId, name: cp ? cp.name : 'Item', qty: Number(it.qty) };
+      });
+    if(items.length===0){
+      msg.innerHTML = '<div class="form-msg err">Add at least one item to this bundle.</div>';
+      return;
+    }
+    // Bundles carry isBundle/bundleItems instead of stock/lowStock — their
+    // availability is computed live from those items' own stock.
+    data = { name, category, unit, price, costPrice, compareAtPrice, featured, imageUrl, description,
+      isBundle: true, bundleItems: items, stock: null, lowStock: null };
+  } else {
+    const stock = Math.max(0, parseInt(document.getElementById('editStock').value) || 0);
+    const lowStock = Math.max(0, parseInt(document.getElementById('editLowStock').value) || 5);
+    data = { name, category, unit, price, costPrice, compareAtPrice, stock, lowStock, featured, imageUrl, description,
+      isBundle: false, bundleItems: null };
+  }
   try{
     if(editingProductId){
       await db.collection('products').doc(editingProductId).update(data);
@@ -645,11 +840,30 @@ async function verifyPayment(id){
 // If an order somehow jumps straight to "done" without passing through
 // "shipped" (e.g. a manual/offline sale entered directly as fulfilled),
 // this still deducts stock at that point, guarded the same way.
+// An order's `items` can include bundles (e.g. "1x Starter Set"), but a
+// bundle has no stock field of its own — only its component products do.
+// expandItemsForStock() (in firebase-config.js) turns that into the real
+// {productId, qty} pairs whose stock actually needs to move, using each
+// bundle's CURRENT contents from allProducts.
+//
+// We then save that expanded list onto the order as `stockDeductions`, so
+// restoreStockForOrder() later reverses exactly what was actually taken —
+// even if the bundle's contents get edited (or the bundle itself gets
+// deleted) sometime between shipping and returning this particular order.
 async function ensureStockDeducted(order, reasonPrefix){
   if(order.stockDeducted) return;
-  await db.collection('orders').doc(order.id).update({ stockDeducted: true });
-  for(const item of (order.items||[])){
-    await adjustStock(item.productId, -Math.abs(item.qty), `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'}`);
+  const deductions = expandItemsForStock(order.items, allProducts);
+  // Also clear stockRestored here: this order may be going through the
+  // deduct → restore → re-deduct cycle again (e.g. it was cancelled and is
+  // now being re-shipped), and stockRestored needs to reflect only whether
+  // a restore has happened since the MOST RECENT deduction.
+  await db.collection('orders').doc(order.id).update({
+    stockDeducted: true, stockRestored: false,
+    stockDeductions: deductions.map(d=>({productId:d.productId, qty:d.qty}))
+  });
+  for(const item of deductions){
+    const label = item.bundleName ? `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'} (bundle: ${item.bundleName})` : `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'}`;
+    await adjustStock(item.productId, -Math.abs(item.qty), label);
   }
 }
 
@@ -660,10 +874,25 @@ async function ensureStockDeducted(order, reasonPrefix){
 // ensureStockDeducted is guarded, so flipping the status dropdown back and
 // forth never double-restocks. "Damaged" deliberately does NOT restore
 // stock — those items are a write-off, not sellable inventory.
+//
+// Uses the `stockDeductions` snapshot saved by ensureStockDeducted (falling
+// back to re-expanding order.items for older orders placed before that
+// snapshot existed) so a bundle order restores the exact same components
+// and quantities that were actually taken out, regardless of any bundle
+// edits made since.
+//
+// Also clears `stockDeducted` back to false once the stock is back on the
+// shelf. Without this, re-shipping/re-fulfilling the SAME order later (e.g.
+// cancelled by mistake, then un-cancelled) would see stockDeducted still
+// true and ensureStockDeducted would silently skip deducting stock a
+// second time — even though the item is genuinely going out again.
 async function restoreStockForOrder(order, reasonPrefix){
   if(!order.stockDeducted || order.stockRestored) return;
-  await db.collection('orders').doc(order.id).update({ stockRestored: true });
-  for(const item of (order.items||[])){
+  const toRestore = (Array.isArray(order.stockDeductions) && order.stockDeductions.length)
+    ? order.stockDeductions
+    : expandItemsForStock(order.items, allProducts);
+  await db.collection('orders').doc(order.id).update({ stockDeducted: false, stockRestored: true });
+  for(const item of toRestore){
     await adjustStock(item.productId, Math.abs(item.qty), `${reasonPrefix||'Returned'} — ${order.customerName||'customer'}`);
   }
 }
@@ -741,7 +970,19 @@ async function processReferralReward(order){
     const rewardAmount = Number(settingsData.referralRewardAmount || 0);
     if(rewardAmount <= 0) return; // admin hasn't set a reward amount
 
+    let rewardGiven = false;
     await db.runTransaction(async (tx)=>{
+      // Re-read the referral doc INSIDE the transaction and re-check its
+      // status here. The status check further up (from the query) happens
+      // before this transaction starts, so if two orders for the same
+      // referred customer were marked "Fulfilled" moments apart, both calls
+      // could pass that earlier check before either one commits. Re-reading
+      // and re-verifying status=='pending' inside the transaction closes
+      // that gap — only the first one to commit can ever flip it to
+      // 'rewarded', so the referrer can never be credited twice.
+      const freshRefDoc = await tx.get(refDoc.ref);
+      if(!freshRefDoc.exists || freshRefDoc.data().status !== 'pending') return;
+
       const freshReferrer = await tx.get(referrerRef);
       const current = freshReferrer.exists ? Number(freshReferrer.data().creditBalance || 0) : 0;
       tx.update(referrerRef, { creditBalance: current + rewardAmount });
@@ -751,8 +992,11 @@ async function processReferralReward(order){
         orderId: order.id,
         rewardedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
+      rewardGiven = true;
     });
-    toast(`Referral reward: ${money(rewardAmount)} credited to ${referrerDoc.data().name || referrerDoc.data().email || 'referrer'}`);
+    if(rewardGiven){
+      toast(`Referral reward: ${money(rewardAmount)} credited to ${referrerDoc.data().name || referrerDoc.data().email || 'referrer'}`);
+    }
   }catch(err){ console.error('Could not process referral reward', err); }
 }
 
@@ -831,7 +1075,13 @@ async function deleteOrder(id){
   if(!confirm(msg)) return;
   try{
     if(willRestock){
-      for(const item of (order.items||[])){
+      // Use the same expanded/snapshotted component list restoreStockForOrder
+      // uses — for a bundle order this is the real products inside it, not
+      // the bundle's own id (which has no stock field to restore).
+      const toRestore = (Array.isArray(order.stockDeductions) && order.stockDeductions.length)
+        ? order.stockDeductions
+        : expandItemsForStock(order.items, allProducts);
+      for(const item of toRestore){
         await adjustStock(item.productId, Math.abs(item.qty), `Order deleted — ${order.customerName||'customer'}`);
       }
     }
@@ -964,8 +1214,16 @@ if(manualSaleCloseBtn) manualSaleCloseBtn.addEventListener('click', ()=>{
   document.getElementById('manualSaleModalOverlay').classList.remove('show');
 });
 
+// Manual sales (offline/off-site) only pick from real, single-stock
+// products — not bundles. A bundle has no stock field of its own to
+// adjust, so selling one here would need the same component-expansion
+// logic as an online checkout; for now, record a bundle's offline sale as
+// its individual component products instead.
+function manualSaleCandidates(){
+  return allProducts.filter(p=>!p.isBundle);
+}
 function addManualSaleItemRow(){
-  const firstProduct = allProducts[0];
+  const firstProduct = manualSaleCandidates()[0];
   manualSaleItems.push({
     productId: firstProduct ? firstProduct.id : '',
     qty: 1,
@@ -980,7 +1238,8 @@ function removeManualSaleItemRow(i){
 function renderManualSaleItems(){
   const wrap = document.getElementById('manualSaleItemList');
   if(!wrap) return;
-  if(allProducts.length===0){
+  const candidates = manualSaleCandidates();
+  if(candidates.length===0){
     wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">Add a product first — there's nothing to sell yet.</p>`;
     return;
   }
@@ -988,7 +1247,7 @@ function renderManualSaleItems(){
     wrap.innerHTML = `<p style="color:var(--plum-soft); font-size:13px;">No items yet — add one below.</p>`;
   } else {
     wrap.innerHTML = manualSaleItems.map((it,i)=>{
-      const options = allProducts.map(p=>`<option value="${p.id}" ${p.id===it.productId?'selected':''}>${esc(p.name)||'Untitled'}</option>`).join('');
+      const options = candidates.map(p=>`<option value="${p.id}" ${p.id===it.productId?'selected':''}>${esc(p.name)||'Untitled'}</option>`).join('');
       return `
       <div class="repeat-row">
         <div class="field" style="flex:2;"><label>Product</label><select class="man-item-product" data-i="${i}">${options}</select></div>

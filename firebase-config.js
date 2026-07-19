@@ -31,6 +31,85 @@ function productImg(url){
   return esc(url) || PLACEHOLDER_IMAGE;
 }
 
+// ---------------------------------------------------------------------
+// BUNDLES ("packages" of multiple products sold as one item)
+// A bundle product looks like any other product doc (name, price, image,
+// category...) plus:
+//   isBundle: true
+//   bundleItems: [{ productId, name, qty }, ...]   // qty = how many of
+//                                                   // that product ONE
+//                                                   // bundle contains
+// A bundle never stores its own `stock` number — instead, how many
+// bundles could be assembled right now is computed live from the current
+// stock of its component products. Selling a bundle deducts from those
+// components, not from the bundle itself, so there's nothing to keep in
+// sync by hand.
+// ---------------------------------------------------------------------
+
+// How many complete bundles can currently be assembled, given the live
+// stock of each component product. Limited by whichever component runs
+// out first (e.g. a bundle needing 2x Serum A + 1x Serum B, with 5 Serum A
+// and 2 Serum B in stock, can only be assembled twice).
+function bundleAvailableQty(product, allProducts){
+  if(!product || !Array.isArray(product.bundleItems) || product.bundleItems.length===0) return 0;
+  let min = Infinity;
+  for(const comp of product.bundleItems){
+    const compProduct = (allProducts||[]).find(x=>x.id===comp.productId);
+    const compStock = compProduct ? Number(compProduct.stock||0) : 0;
+    const qtyNeeded = Number(comp.qty||1);
+    const possible = qtyNeeded>0 ? Math.floor(compStock/qtyNeeded) : 0;
+    if(possible < min) min = possible;
+  }
+  return min===Infinity ? 0 : Math.max(0, min);
+}
+
+// The one function everywhere else should call to find out "how many of
+// this product/bundle are currently sellable" — works for plain products
+// and bundles alike, so callers never need their own if(isBundle) branch.
+function availableStock(product, allProducts){
+  if(!product) return 0;
+  if(product.isBundle) return bundleAvailableQty(product, allProducts);
+  return Number(product.stock||0);
+}
+
+// A short "Includes: 2x Serum A, 1x Serum B" string for bundle product
+// cards/modals. Falls back to the name snapshotted on the bundle item
+// itself if the component product can no longer be found (e.g. deleted).
+function bundleContentsLabel(product, allProducts){
+  if(!product || !Array.isArray(product.bundleItems)) return '';
+  return product.bundleItems.map(comp=>{
+    const compProduct = (allProducts||[]).find(x=>x.id===comp.productId);
+    const name = (compProduct && compProduct.name) || comp.name || 'Item';
+    return `${comp.qty}× ${name}`;
+  }).join(', ');
+}
+
+// Expands an order's line items into the REAL (non-bundle) product/qty
+// pairs whose stock actually needs to move — e.g. "1x Starter Set" becomes
+// "2x Serum A, 1x Serum B" if that's what the bundle contained. Plain
+// (non-bundle) items pass through unchanged. Used whenever stock is
+// deducted or restored for an order, so bundle orders adjust the right
+// products automatically instead of trying to adjust stock on the bundle's
+// own (non-existent) stock field.
+function expandItemsForStock(items, allProducts){
+  const out = [];
+  (items||[]).forEach(item=>{
+    const product = (allProducts||[]).find(p=>p.id===item.productId);
+    if(product && product.isBundle && Array.isArray(product.bundleItems)){
+      product.bundleItems.forEach(comp=>{
+        out.push({
+          productId: comp.productId,
+          qty: Number(comp.qty||1) * Number(item.qty||0),
+          bundleName: product.name
+        });
+      });
+    } else {
+      out.push({ productId: item.productId, qty: Number(item.qty||0) });
+    }
+  });
+  return out;
+}
+
 // Escapes text before it's dropped into innerHTML. Product names/descriptions
 // and — importantly — customer-submitted checkout fields (name, phone,
 // address, notes) all flow into admin.html and shop.html via innerHTML, so

@@ -15,11 +15,6 @@
 </head>
 <body>
 
-<div class="bg-field">
-  <div class="blob b1"></div>
-  <div class="blob b2"></div>
-  <div class="blob b3"></div>
-</div>
 
 <div id="authGate"><p>Checking your admin access…</p></div>
 
@@ -352,15 +347,22 @@
     <button class="close-x" id="editCloseBtn">✕</button>
     <h2 id="editModalTitle" style="font-weight:500; margin-top:0;">Add product</h2>
     <div class="field"><label>Product name</label><input type="text" id="editName" placeholder="e.g. GHK-Cu Serum 10ml"></div>
+    <div class="field">
+      <label>Product type</label>
+      <select id="editIsBundle">
+        <option value="false">Single product — has its own stock</option>
+        <option value="true">Bundle / package — a set of other products sold together</option>
+      </select>
+    </div>
     <div class="two-col">
       <div class="field"><label>Category</label><input type="text" id="editCategory" placeholder="e.g. Peptides"></div>
       <div class="field"><label>Unit / variant</label><input type="text" id="editUnit" placeholder="e.g. 10mL / vial"></div>
     </div>
     <div class="two-col">
-      <div class="field"><label>Selling price (₱)</label><input type="number" id="editPrice" placeholder="0.00"></div>
-      <div class="field"><label>Cost price (₱, what you paid)</label><input type="number" id="editCostPrice" placeholder="0.00"></div>
+      <div class="field"><label>Selling price (₱)</label><input type="number" id="editPrice" placeholder="0.00" min="0" step="0.01"></div>
+      <div class="field"><label>Cost price (₱, what you paid)</label><input type="number" id="editCostPrice" placeholder="0.00" min="0" step="0.01"></div>
     </div>
-    <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale"></div>
+    <div class="field"><label>Compare-at price (₱, optional)</label><input type="number" id="editCompareAtPrice" placeholder="Original price, if on sale" min="0" step="0.01"></div>
     <div class="field discount-quick-row" style="background:var(--bg-alt); border-radius:12px; padding:12px 14px;">
       <label style="margin-bottom:8px;">Quick discount</label>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -370,9 +372,23 @@
       </div>
       <div style="font-size:12px; color:var(--plum-soft); margin-top:8px;" id="discountPreview">No discount applied.</div>
     </div>
-    <div class="two-col">
-      <div class="field"><label>Stock quantity</label><input type="number" id="editStock" placeholder="0"></div>
-      <div class="field"><label>Low stock alert at</label><input type="number" id="editLowStock" placeholder="5"></div>
+    <!-- SINGLE PRODUCT: manual stock fields. Hidden for bundles, since a
+         bundle's stock is computed live from its component products. -->
+    <div class="two-col" id="singleStockFields">
+      <div class="field"><label>Stock quantity</label><input type="number" id="editStock" placeholder="0" min="0" step="1"></div>
+      <div class="field"><label>Low stock alert at</label><input type="number" id="editLowStock" placeholder="5" min="0" step="1"></div>
+    </div>
+    <!-- BUNDLE: pick which products go in it, and how many of each.
+         Shown only when "Product type" above is set to Bundle. -->
+    <div class="field" id="bundleItemsFields" style="display:none; background:var(--bg-alt); border-radius:12px; padding:12px 14px;">
+      <label style="margin-bottom:8px;">What's included in this bundle</label>
+      <div id="bundleItemsList"></div>
+      <button type="button" class="icon-btn" id="addBundleItemBtn" style="margin-top:6px;">+ Add item</button>
+      <div style="font-size:12px; color:var(--plum-soft); margin-top:10px;" id="bundleAvailablePreview"></div>
+      <div style="font-size:12px; color:var(--plum-soft); margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span id="bundleCostSuggestion"></span>
+        <button type="button" class="icon-btn" id="useBundleCostBtn" style="display:none;">Use as cost price</button>
+      </div>
     </div>
     <div class="field"><label>Show "Bestseller" badge?</label>
       <select id="editFeatured"><option value="false">No</option><option value="true">Yes</option></select>

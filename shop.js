@@ -49,11 +49,12 @@ function pruneCartAgainstStock(){
   let changed = false;
   Object.keys(cart).forEach(id=>{
     const p = allProducts.find(x=>x.id===id);
-    if(!p || Number(p.stock||0) <= 0){
+    const stock = p ? availableStock(p, allProducts) : 0;
+    if(!p || stock <= 0){
       delete cart[id];
       changed = true;
-    } else if(cart[id] > Number(p.stock)){
-      cart[id] = Number(p.stock);
+    } else if(cart[id] > stock){
+      cart[id] = stock;
       changed = true;
     }
   });
@@ -233,14 +234,15 @@ function renderProductGrid(){
     return;
   }
   grid.innerHTML = list.map(p=>{
-    const stock = Number(p.stock||0);
+    const stock = availableStock(p, allProducts);
     const threshold = p.lowStock!=null ? Number(p.lowStock) : 5;
     const stockLabel = stock<=0 ? 'Sold out' : (stock<=threshold ? `${stock} left` : 'In stock');
     const hasDiscount = p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price);
+    const bundleLine = p.isBundle ? `<p class="card-desc" style="color:var(--plum);">Includes: ${esc(bundleContentsLabel(p, allProducts))}</p>` : '';
     return `
     <div class="card glass" data-id="${p.id}">
       <div class="img-wrap" onclick="openProductModal('${p.id}')">
-        ${p.featured ? '<span class="badge">Bestseller</span>' : ''}
+        ${p.featured ? '<span class="badge">Bestseller</span>' : (p.isBundle ? '<span class="badge">Bundle</span>' : '')}
         <span class="stock-badge">${stockLabel}</span>
         <img src="${productImg(p.imageUrl)}" alt="${esc(p.name)}" loading="lazy">
         <button class="quick-add" ${stock<=0?'disabled style="opacity:.5;cursor:not-allowed;bottom:10px;"':''} onclick="addToCart('${p.id}', event)">
@@ -254,7 +256,7 @@ function renderProductGrid(){
           ${p.unit ? `<div class="card-unit">${esc(p.unit)}</div>` : ''}
         </div>
         <h3 class="card-name" onclick="openProductModal('${p.id}')">${esc(p.name)||'Untitled'}</h3>
-        <p class="card-desc">${esc((p.description||'').slice(0,80))}${(p.description||'').length>80?'…':''}</p>
+        ${bundleLine || `<p class="card-desc">${esc((p.description||'').slice(0,80))}${(p.description||'').length>80?'…':''}</p>`}
         <div class="card-foot">
           <div class="price-block">
             ${hasDiscount ? `<span class="price-old">${money(p.compareAtPrice)}</span>` : ''}
@@ -276,8 +278,9 @@ function renderProductGrid(){
 function openProductModal(id){
   const p = allProducts.find(x=>x.id===id);
   if(!p) return;
-  const stock = Number(p.stock||0);
+  const stock = availableStock(p, allProducts);
   const hasDiscount = p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price);
+  const bundleBlock = p.isBundle ? `<div style="font-size:13.5px; color:var(--plum); margin-bottom:10px;"><strong>Includes:</strong> ${esc(bundleContentsLabel(p, allProducts))}</div>` : '';
   document.getElementById('productModal').innerHTML = `
     <button class="close-x" onclick="closeProductModal()">✕</button>
     <div class="product-modal-grid">
@@ -285,6 +288,7 @@ function openProductModal(id){
       <div>
         <div class="card-cat-row"><div class="card-cat">${esc(p.category)||'Skincare'}</div>${p.unit ? `<div class="card-unit">${esc(p.unit)}</div>` : ''}</div>
         <h2 style="font-weight:500; margin:6px 0 10px;">${esc(p.name)}</h2>
+        ${bundleBlock}
         <p style="color:var(--plum-soft); font-size:14px; line-height:1.7;">${esc(p.description)||'No description provided yet.'}</p>
         <div style="display:flex; align-items:baseline; gap:10px; margin:16px 0;">
           ${hasDiscount ? `<span class="price-old" style="font-size:15px;">${money(p.compareAtPrice)}</span>` : ''}
@@ -307,8 +311,9 @@ document.getElementById('productModalOverlay').addEventListener('click', e=>{
 function addToCart(id, evt){
   if(evt) evt.stopPropagation();
   const p = allProducts.find(x=>x.id===id);
-  if(!p || Number(p.stock||0)<=0) return;
-  const stock = Number(p.stock||0);
+  if(!p) return;
+  const stock = availableStock(p, allProducts);
+  if(stock<=0) return;
   if((cart[id]||0) >= stock){
     toast(`Only ${stock} of ${p.name} in stock`);
     return;
@@ -321,7 +326,7 @@ function addToCart(id, evt){
 function changeQty(id, delta){
   if(!cart[id]) return;
   const p = allProducts.find(x=>x.id===id);
-  const stock = p ? Number(p.stock||0) : Infinity;
+  const stock = p ? availableStock(p, allProducts) : Infinity;
   if(delta > 0 && cart[id] >= stock){
     toast(`Only ${stock} in stock`);
     return;
@@ -388,6 +393,7 @@ document.getElementById('checkoutBtn').addEventListener('click', ()=>{
   resetPaymentPicker();
   const creditBox = document.getElementById('applyCreditCheckbox');
   if(creditBox) creditBox.checked = false;
+  document.querySelectorAll('#checkoutModalOverlay .medAckItem').forEach(cb=>cb.checked=false);
   updateCreditUI();
   document.getElementById('checkoutModalOverlay').classList.add('show');
 });
@@ -490,6 +496,13 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     msgBox.innerHTML = '<div class="form-msg err">Please choose a courier.</div>';
     return;
   }
+  const medicalItems = document.querySelectorAll('#checkoutModalOverlay .medAckItem');
+  const medicalAllChecked = medicalItems.length > 0 && Array.from(medicalItems).every(cb=>cb.checked);
+  if(!medicalAllChecked){
+    msgBox.innerHTML = '<div class="form-msg err">Please check all boxes in the Medical & Customer Acknowledgment above.</div>';
+    document.querySelector('#checkoutModalOverlay .med-ack-card').scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
   // Stock can change (or a product can be removed) between adding to cart
   // and checking out — re-validate against current data before sending.
   for(const id of Object.keys(cart)){
@@ -498,8 +511,9 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       msgBox.innerHTML = '<div class="form-msg err">One of your items is no longer available — please review your bag.</div>';
       return;
     }
-    if(cart[id] > Number(p.stock||0)){
-      msgBox.innerHTML = `<div class="form-msg err">Only ${Number(p.stock||0)} of "${esc(p.name)}" left — please adjust your bag.</div>`;
+    const stock = availableStock(p, allProducts);
+    if(cart[id] > stock){
+      msgBox.innerHTML = `<div class="form-msg err">Only ${stock} of "${esc(p.name)}" left — please adjust your bag.</div>`;
       renderCart();
       return;
     }
@@ -565,6 +579,8 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
         customerName:name, email, phone, address, shippingMethod, notes,
         items, subtotal, creditApplied, total,
         customerUid: uid,
+        medicalAcknowledged: true,
+        medicalAcknowledgedAt: firebase.firestore.FieldValue.serverTimestamp(),
         paymentMethod: fullyCoveredByCredit ? (selectedPayMethod || 'credit') : selectedPayMethod,
         paymentReference: paymentRef || null,
         paymentStatus: fullyCoveredByCredit ? 'verified' : 'submitted',
@@ -588,6 +604,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       document.getElementById('custNotes').value='';
       resetPaymentPicker();
       if(creditCheckbox) creditCheckbox.checked = false;
+      document.querySelectorAll('#checkoutModalOverlay .medAckItem').forEach(cb=>cb.checked=false);
     }, 1800);
   }catch(err){
     console.error(err);

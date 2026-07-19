@@ -25,7 +25,14 @@
        }
        match /users/{userId} {
          allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
-         allow create: if request.auth != null && request.auth.uid == userId;
+         // A brand-new sign-up may only ever create their OWN doc as a
+         // plain customer with zero starting credit — this is what stops
+         // someone from opening devtools and writing role:"admin" (or a
+         // fake creditBalance) straight into their own first-time doc,
+         // which the old "just check uid == userId" version allowed.
+         allow create: if request.auth != null && request.auth.uid == userId &&
+           request.resource.data.role == 'customer' &&
+           (!('creditBalance' in request.resource.data) || request.resource.data.creditBalance == 0);
          // Admins can change OTHER users' role (used by the Users tab in
          // admin.html) but can never edit their own document — this stops
          // an admin from accidentally demoting/locking out themselves.
@@ -55,11 +62,24 @@
          allow write: if isAdmin();
        }
        match /orders/{orderId} {
-         // Anyone signed in can place an order (checkout in shop.js), and
-         // can't put someone else's uid on it.
+         // A customer can only create a FRESH order, under their own uid,
+         // that hasn't already been marked fulfilled/paid — status must be
+         // "new", and paymentStatus can only be "verified" up front if the
+         // order is fully covered by store credit (total == 0). This is
+         // what stops a signed-in customer from crafting a fake order doc
+         // with status:"done"/paymentStatus:"verified" straight from
+         // devtools. Only an admin can create an order that's already
+         // done/verified — that's the manual/offline sale path in
+         // admin.js, which always leaves customerUid null.
          allow create: if request.auth != null &&
-           (request.resource.data.customerUid == null ||
-            request.resource.data.customerUid == request.auth.uid);
+           (
+             (request.resource.data.customerUid == request.auth.uid &&
+              request.resource.data.status == 'new' &&
+              (request.resource.data.paymentStatus == 'submitted' ||
+               (request.resource.data.paymentStatus == 'verified' && request.resource.data.total == 0)))
+             ||
+             (isAdmin() && request.resource.data.customerUid == null)
+           );
          // A customer can read only THEIR OWN orders — this is what
          // account.js's "My orders" tab relies on. Admins can read all.
          allow read: if isAdmin() ||
@@ -86,6 +106,12 @@
    settings (previously any signed-in customer technically could, if they
    crafted the request by hand). Customers can only create orders under
    their own uid and read their own order history — not anyone else's.
+   New sign-ups can only ever create themselves as role "customer" with
+   zero starting credit, and can only create their own order as a fresh
+   "new" order — not as one already marked done/paid — which closes off
+   two ways a customer could otherwise fake admin access or a fake
+   completed sale by writing directly to Firestore instead of going
+   through the app's UI.
 
 5b. In Storage -> Rules, paste this (then Publish). This is what actually
     gates the product-photo / QR-code uploads that wireImageUpload() in
@@ -151,7 +177,7 @@
 
 <style>
   body{ display:flex; align-items:center; justify-content:center; min-height:100vh; }
-  .login-card{ text-align:center; max-width:400px; }
+  .login-card{ text-align:center; max-width:440px; }
   .login-card h2{font-family:'Fraunces',serif; margin:14px 0 6px; font-weight:500;}
   .login-card p.sub{color:var(--plum-soft); font-size:13.5px; margin:0 0 26px;}
   .login-logo{width:130px; max-width:60%;}
@@ -159,15 +185,16 @@
   .mode-btn{flex:1; border:none; background:none; padding:10px; border-radius:999px; font-weight:700; font-size:13px; cursor:pointer; color:var(--plum-soft);}
   .mode-btn.active{background:var(--plum); color:#fff;}
   .field{text-align:left;}
+  .med-ack-card{ border:1px solid var(--line); border-radius:14px; padding:16px 18px; margin:0 0 16px; background:#fff; text-align:left; }
+  .med-ack-card h4{ margin:0 0 12px; font-size:13.5px; font-weight:800; color:var(--plum); }
+  .med-ack-card h4 .req{ color:#e0575a; }
+  .med-ack-item{ display:flex; align-items:flex-start; gap:10px; margin-bottom:12px; cursor:pointer; font-size:12px; line-height:1.45; color:var(--plum); }
+  .med-ack-item:last-child{ margin-bottom:0; }
+  .med-ack-item input{ width:16px; height:16px; margin-top:1px; flex:none; accent-color:var(--plum); }
 </style>
 </head>
 <body>
 
-<div class="bg-field">
-  <div class="blob b1"></div>
-  <div class="blob b2"></div>
-  <div class="blob b3"></div>
-</div>
 
 <div class="login-wrap">
   <div class="login-card glass">
@@ -200,6 +227,25 @@
     <p id="resendCodeLink" style="text-align:right; margin:-6px 0 16px; display:none;">
       <a href="#" id="resendCodeBtn" style="font-size:12.5px; color:var(--plum-soft); font-weight:700;">Resend code</a>
     </p>
+
+    <div class="field" id="medicalDisclaimerField" style="display:none; margin-top:4px;">
+      <div id="medicalDisclaimerBox" style="max-height:150px; overflow-y:auto; background:var(--bg-alt); border:1px solid var(--line); border-radius:12px; padding:14px 16px; font-size:12px; line-height:1.6; color:var(--plum-soft); margin-bottom:14px; text-align:left;">
+        <strong style="color:var(--plum); display:block; margin-bottom:6px;">Medical Consultation Notice</strong>
+        <p style="margin:0 0 8px;">Bloomé by KJ is not a medical clinic and does not provide medical advice, diagnoses, or treatment. Any product info shared through our social pages or support is for general informational purposes only.</p>
+        <p style="margin:0 0 6px;">We strongly encourage you to consult a licensed physician before purchasing or using any product, especially if you're pregnant/breastfeeding, take maintenance medications, or have a thyroid, diabetes, GI, pancreatitis, gallbladder, kidney, liver, cardiovascular, or allergy-related condition.</p>
+        <p style="margin:0;">If unsure whether a product is right for you, please consult your healthcare provider before purchasing.</p>
+      </div>
+      <div class="med-ack-card">
+        <h4>Medical &amp; Customer Acknowledgment <span class="req">*</span></h4>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="age"><span>I confirm that I am at least 18 years old.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="noadvice"><span>I understand that Bloomé by KJ does not provide medical advice, diagnosis, or treatment.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="consult"><span>I understand that I have been advised to consult a licensed healthcare professional before purchasing or using any product.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="pregnant"><span>To the best of my knowledge, I am not pregnant or breastfeeding.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="conditions"><span>I understand that if I have an underlying medical condition (thyroid, pancreatitis, gallbladder, diabetes, GI), take maintenance medications, or have concerns about suitability, I should consult a healthcare professional first.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="cannot-determine"><span>I understand that Bloomé by KJ cannot determine whether a product is appropriate for my individual medical condition.</span></label>
+        <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="read"><span>I confirm that I have read and understood the Medical Consultation Notice above.</span></label>
+      </div>
+    </div>
 
     <button class="full-btn" id="authSubmitBtn">Sign in</button>
     <div id="authMsg"></div>
@@ -256,6 +302,7 @@
     document.getElementById('resendCodeLink').style.display = mode==='verify' ? 'block' : 'none';
     document.getElementById('backHomeLink').style.display = mode==='verify' ? 'none' : 'block';
     document.getElementById('nameField').style.display = mode==='signup' ? 'block' : 'none';
+    document.getElementById('medicalDisclaimerField').style.display = mode==='signup' ? 'block' : 'none';
     document.getElementById('authEmail').closest('.field').style.display = mode==='verify' ? 'none' : 'block';
 
     modeSignInBtn.classList.toggle('active', mode==='signin');
@@ -391,6 +438,15 @@
       msgBox.innerHTML = '<div class="form-msg err">Please enter your email and password.</div>';
       return;
     }
+    if(mode === 'signup'){
+      const medicalItems = document.querySelectorAll('#medicalDisclaimerField .medAckItem');
+      const allChecked = medicalItems.length > 0 && Array.from(medicalItems).every(cb=>cb.checked);
+      if(!allChecked){
+        msgBox.innerHTML = '<div class="form-msg err">Please check all boxes in the Medical & Customer Acknowledgment to continue.</div>';
+        document.querySelector('#medicalDisclaimerField .med-ack-card').scrollIntoView({behavior:'smooth', block:'center'});
+        return;
+      }
+    }
     submitBtn.disabled = true;
     try{
       let userCred;
@@ -403,6 +459,8 @@
           email, name, role: 'customer', emailVerified: false,
           creditBalance: 0,
           referredByUid: validReferrer,
+          medicalNoticeAcknowledged: true,
+          medicalNoticeAcknowledgedAt: firebase.firestore.FieldValue.serverTimestamp(),
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
         if(validReferrer){

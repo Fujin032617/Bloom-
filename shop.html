@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shop — Bloomé by KJ</title>
+<title>Shop — Peptide Serums</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,6 +20,12 @@
   }
   .account-pill button{ background:none; border:none; color:var(--rose-deep); font-weight:700; font-size:12px; cursor:pointer; }
   #authGate{ min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  .med-ack-card{ border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin:0 0 14px; background:#fff; }
+  .med-ack-card h4{ margin:0 0 10px; font-size:12.5px; font-weight:800; color:var(--plum); }
+  .med-ack-card h4 .req{ color:#e0575a; }
+  .med-ack-item{ display:flex; align-items:flex-start; gap:9px; margin-bottom:9px; cursor:pointer; font-size:11.5px; line-height:1.4; color:var(--plum); }
+  .med-ack-item:last-child{ margin-bottom:0; }
+  .med-ack-item input{ width:15px; height:15px; margin-top:1px; flex:none; accent-color:var(--plum); }
 </style>
 </head>
 <body>
@@ -28,37 +34,16 @@
 
 <div id="shopRoot" style="display:none;">
 
-<div class="bg-field">
-  <div class="blob b1"></div>
-  <div class="blob b2"></div>
-  <div class="blob b3"></div>
-</div>
-<svg class="bond-pattern" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <pattern id="bonds" x="0" y="0" width="140" height="140" patternUnits="userSpaceOnUse">
-      <circle cx="10" cy="10" r="2.2" fill="#B9A6E0"/>
-      <circle cx="70" cy="40" r="2.2" fill="#CE7EA0"/>
-      <circle cx="120" cy="15" r="2" fill="#B9A6E0"/>
-      <circle cx="40" cy="90" r="2" fill="#CE7EA0"/>
-      <circle cx="100" cy="110" r="2.4" fill="#B9A6E0"/>
-      <line x1="10" y1="10" x2="70" y2="40" stroke="#B9A6E0" stroke-width="0.6"/>
-      <line x1="70" y1="40" x2="120" y2="15" stroke="#CE7EA0" stroke-width="0.6"/>
-      <line x1="40" y1="90" x2="100" y2="110" stroke="#B9A6E0" stroke-width="0.6"/>
-    </pattern>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#bonds)"/>
-</svg>
-
 <header>
-  <a class="brand" href="index.html" aria-label="Bloomé by KJ home">
-    <img class="brand-logo" src="logo.webp" alt="Bloomé by KJ">
+  <a class="brand" href="index.html" aria-label="Peptide Serums home">
+    <img class="brand-logo" src="logo.webp" alt="Peptide Serums">
   </a>
   <button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰</button>
   <nav class="links" id="navLinks">
     <a href="index.html">Home</a>
-    <a href="index.html#science">The Science</a>
-    <a href="index.html#contact">Contact</a>
-    <a href="account.html">My Account</a>
+    <a href="shop.html">Shop</a>
+    <a href="#about">About</a>
+    <a href="account.html">Account</a>
   </nav>
   <div class="header-actions">
     <button class="icon-action" id="searchToggleBtn" aria-label="Search products" title="Search">
@@ -210,6 +195,14 @@
       </label>
     </div>
     <div id="checkoutTotalsBox" style="font-size:13.5px; margin:0 0 14px; color:var(--plum-soft);"></div>
+
+    <div class="med-ack-card">
+      <h4>Medical &amp; Customer Acknowledgment <span class="req">*</span></h4>
+      <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="age"><span>I confirm I am at least 18 years old and, to my knowledge, not pregnant or breastfeeding.</span></label>
+      <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="noadvice"><span>I understand Bloomé by KJ does not provide medical advice, diagnosis, or treatment.</span></label>
+      <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="consult"><span>If I have a medical condition, take maintenance medications, or have concerns about suitability, I've been advised to consult a healthcare professional before ordering.</span></label>
+      <label class="med-ack-item"><input type="checkbox" class="medAckItem" data-ack="read"><span>I confirm I've read and understood the Medical Consultation Notice.</span></label>
+    </div>
 
     <button class="full-btn" id="submitOrderBtn">Send order request</button>
     <div id="checkoutMsg"></div>
