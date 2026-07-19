@@ -306,6 +306,20 @@
         </div>
 
         <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
+          <h3 class="settings-h3">Shipping fee</h3>
+          <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 18px;">
+            One flat fee applied to every order at checkout, regardless of courier or address —
+            not calculated per-distance. Shown to customers as "Subtotal + shipping" before they pay.
+          </div>
+          <div class="two-col">
+            <div class="field"><label>Flat shipping fee (₱)</label><input type="number" id="setShippingFee" placeholder="e.g. 150" min="0" step="1"></div>
+            <div class="field"><label>Charge shipping?</label>
+              <select id="setShippingFeeEnabled"><option value="false">No — free shipping for now</option><option value="true">Yes — add this fee at checkout</option></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-table-wrap" style="padding:26px; margin-bottom:22px;">
           <h3 class="settings-h3">Referral program</h3>
           <div style="font-size:12.5px; color:var(--plum-soft); margin:-10px 0 18px;">
             Only customers with at least one order can share a referral link. When someone they invite
@@ -456,6 +470,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 <script src="firebase-config.js"></script>
 <script src="admin.js"></script>
 </body>

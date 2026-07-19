@@ -84,8 +84,23 @@
          // account.js's "My orders" tab relies on. Admins can read all.
          allow read: if isAdmin() ||
            (request.auth != null && resource.data.customerUid == request.auth.uid);
-         // Only admins change status, tracking, payment verification, etc.
-         allow update, delete: if isAdmin();
+         // Admins can change anything. A customer may only cancel their OWN
+         // order, and only while it's still "new" (nothing confirmed, paid-
+         // verified, or shipped yet) — this is the self-service "Cancel this
+         // order" button in account.js. Orders that spent store credit are
+         // excluded (resource.data.creditApplied must be 0/unset) because a
+         // customer can't top up their own creditBalance (see the users
+         // rule above) — refunding that credit has to go through an admin,
+         // who can cancel/delete the order from admin.html and have the
+         // credit restored automatically. Any other field, or cancelling
+         // from any later status, still requires an admin.
+         allow update: if isAdmin() ||
+           (request.auth != null && resource.data.customerUid == request.auth.uid &&
+            resource.data.status == 'new' &&
+            (!('creditApplied' in resource.data) || resource.data.creditApplied == 0) &&
+            request.resource.data.status == 'cancelled' &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','cancelledByCustomer','cancelledAt']));
+         allow delete: if isAdmin();
        }
        match /stockMovements/{moveId} {
          allow read, write: if isAdmin();
@@ -140,9 +155,9 @@
    }
 
    Note: firestore.get() inside Storage rules needs the Blaze (pay-as-you-go)
-   plan — still free-tier-eligible for a small shop, but won't work on the
-   free Spark plan. If you're on Spark, use this simpler (less strict)
-   fallback instead: allow write: if request.auth != null && isValidImage();
+   plan (still free-tier-eligible for a small shop). On Spark you'd need a
+   simpler, less strict fallback rule instead — not relevant if you're
+   already on Blaze, which the isAdmin() version above assumes.
 
 6. Anyone who signs up on this page becomes a "customer" automatically.
    The FIRST admin has to be promoted by hand: sign up normally, then in
@@ -167,6 +182,46 @@
       (EMAILJS_PUBLIC_KEY, EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID).
    f. That's it — no server, no cloud function. The browser calls
       EmailJS directly to send the code.
+   g. IMPORTANT — your EmailJS Public Key, Service ID, and Template ID are
+      all visible in this site's source (firebase-config.js), same as any
+      client-only integration. In the EmailJS dashboard, go to Account ->
+      Security and turn on "Allowed origins" / domain restriction, limited
+      to your own domain, so the key can't be used to send email from
+      anywhere else. Also check Account -> General for any monthly-quota
+      or per-hour rate-limit settings and set a sensible cap. The code in
+      this project also enforces a 30-second cooldown between code sends
+      per browser tab, but that's just a courtesy speed bump — the EmailJS
+      dashboard settings are the actual protection.
+
+8. OPTIONAL — ORDER STATUS UPDATE EMAILS (payment verified / shipped /
+   delivered). Customers already get an in-app notification toast for
+   this automatically, with no setup required. To ALSO email them:
+   a. In EmailJS, create a second template (same account/service as
+      step 7). Give it these variables: {{to_name}}, {{to_email}},
+      {{order_id}}, {{status}}, {{courier}}, {{tracking_number}}. Set
+      the template's "To email" field to {{to_email}}.
+   b. Copy its Template ID into EMAILJS_ORDER_UPDATE_TEMPLATE_ID in
+      firebase-config.js. Leave it blank to skip email and rely on the
+      in-app toast only.
+
+9. OPTIONAL — INVOICE EMAIL (sent once, the moment you click "Mark
+   verified" on a payment in admin.html). This replaces the generic
+   "Payment verified" status email with a full itemized invoice.
+   a. In EmailJS, create a third template (same account/service as
+      step 7). Give it these variables: {{to_name}}, {{to_email}},
+      {{order_id}}, {{order_date}}, {{items_html}}, {{subtotal}},
+      {{shipping_fee}}, {{credit_applied}}, {{total}}, {{payment_method}},
+      {{payment_reference}}, {{delivery_address}}, {{courier}}.
+      Set the template's "To email" field to {{to_email}}.
+      IMPORTANT: {{items_html}} contains an HTML <table> of line items
+      built in code — insert it using the template's HTML/code editor
+      (not the plain-text editor) so it renders as a table instead of
+      showing raw tags. Build the rest of the invoice layout (logo,
+      addresses, totals rows) around it as you like.
+   b. Copy its Template ID into EMAILJS_INVOICE_TEMPLATE_ID in
+      firebase-config.js. Leave it blank to skip invoice emails — the
+      customer still gets the plain "Payment verified" status email from
+      step 8 instead.
 =====================================================================
 -->
 

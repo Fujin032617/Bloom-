@@ -227,7 +227,21 @@ document.getElementById('bulkDiscountBtn').addEventListener('click', async ()=>{
 document.getElementById('bulkDeleteBtn').addEventListener('click', async ()=>{
   const ids = Array.from(selectedProductIds);
   if(ids.length===0) return;
-  if(!confirm(`Delete ${ids.length} selected product${ids.length===1?'':'s'}? This cannot be undone.`)) return;
+  // Same dependency check deleteProduct() runs for a single item — combined
+  // across the whole selection, so bulk-deleting a bundle's component (or
+  // something tied up in an open order) can't slip through unwarned just
+  // because it went through the checkbox+bulk-bar path instead.
+  let combinedWarning = '';
+  let warnedCount = 0;
+  ids.forEach(id=>{
+    const w = productDeleteWarning(id, allProducts.find(p=>p.id===id));
+    if(w){ warnedCount++; combinedWarning += w; }
+  });
+  const baseMsg = `Delete ${ids.length} selected product${ids.length===1?'':'s'}? This cannot be undone.`;
+  const msg = warnedCount
+    ? `${baseMsg}\n\n${warnedCount} of the selected product${warnedCount===1?' is':'s are'} used in a bundle and/or an open order:${combinedWarning}\n\nDelete anyway?`
+    : baseMsg;
+  if(!confirm(msg)) return;
   const { succeeded, failed, firstError } = await runBulkWrites(ids, id=>db.collection('products').doc(id).delete());
   selectedProductIds.clear();
   if(failed>0){
@@ -262,23 +276,13 @@ async function removeProductDiscount(id){
   }catch(err){ alert(err.message); }
 }
 
-async function deleteProduct(id){
-  const product = allProducts.find(p=>p.id===id);
-
-  // Check if this product is a component of any bundle. A bundle has no
-  // stock of its own — its availability is computed live from its
-  // components (see bundleAvailableQty in firebase-config.js) — so
-  // deleting a component here would silently make that bundle permanently
-  // unsellable (0 available forever) with no clue why.
+// Shared by deleteProduct (single) and bulkDeleteBtn (multi) — checks
+// whether deleting this product would silently break a bundle it's part
+// of, or leave an open order unable to deduct stock for it correctly.
+function productDeleteWarning(id, product){
   const dependentBundles = allProducts.filter(p =>
     p.isBundle && Array.isArray(p.bundleItems) && p.bundleItems.some(bi => bi.productId === id)
   );
-
-  // Check if this product has stock tied up in an order that hasn't been
-  // shipped/fulfilled yet. If that order later gets marked "Shipped," its
-  // stock deduction for this line item will silently fail (the product
-  // won't exist to deduct from) and can never be retried — the order's
-  // stockDeducted flag gets set regardless, guarding against a retry.
   let dependentOrderCount = 0;
   try{
     const openOrders = (window._orders||[]).filter(o => !['done','cancelled','returned','damaged'].includes(o.status||'new'));
@@ -292,6 +296,12 @@ async function deleteProduct(id){
   if(dependentOrderCount){
     warning += `\n\nThis product also appears in ${dependentOrderCount} open (not yet shipped/fulfilled) order${dependentOrderCount===1?'':'s'}. If ${dependentOrderCount===1?'that order is':'those orders are'} later marked Shipped, stock for this item won't be deducted correctly.`;
   }
+  return warning;
+}
+
+async function deleteProduct(id){
+  const product = allProducts.find(p=>p.id===id);
+  const warning = productDeleteWarning(id, product);
 
   const msg = warning
     ? `Delete "${product ? product.name : 'this product'}"?${warning}\n\nDelete anyway?`
@@ -319,6 +329,15 @@ function listenMovements(){
 // Adjusts a product's stock by delta (positive to restock, negative to remove/correct)
 // and writes an entry to the stockMovements log. Uses a transaction so concurrent
 // adjustments (or a sale happening at the same time) never overwrite each other.
+// Returns {ok:true} on success or {ok:false, error} on failure — callers
+// that loop over multiple items (ensureStockDeducted, restoreStockForOrder,
+// deleteOrder, manual sales) use this to know whether they can safely
+// treat the whole batch as done, instead of the old version which only
+// ever alert()ed and let the loop continue as if nothing happened. That
+// used to be a real gap: those callers set their guard flag
+// (stockDeducted/stockRestored) BEFORE looping, so if one item's product
+// had been deleted mid-loop, that single item's stock silently never got
+// reconciled and the flag was already true — no retry would ever catch it.
 async function adjustStock(productId, delta, reason){
   const productRef = db.collection('products').doc(productId);
   try{
@@ -348,7 +367,25 @@ async function adjustStock(productId, delta, reason){
     } else {
       toast(delta>=0 ? `Added ${delta} to stock` : `Removed ${Math.abs(delta)} from stock`);
     }
-  }catch(err){ alert(err.message); }
+    return { ok:true };
+  }catch(err){
+    alert(err.message);
+    return { ok:false, error: err };
+  }
+}
+
+// Runs adjustStock for every item in a list and reports which (if any)
+// failed, so a caller can decide whether it's still safe to consider the
+// whole batch reconciled (e.g. keep its guard flag flipped) or needs to
+// surface a warning instead of silently moving on.
+async function adjustStockBatch(items, reasonFor){
+  const failures = [];
+  for(const item of items){
+    const reason = typeof reasonFor === 'function' ? reasonFor(item) : reasonFor;
+    const result = await adjustStock(item.productId, item.qty, reason);
+    if(!result.ok) failures.push(item);
+  }
+  return failures;
 }
 
 function quickAdjust(productId, sign){
@@ -571,7 +608,7 @@ function updateBundlePreview(){
     const cp = allProducts.find(x=>x.id===it.productId);
     return s + (cp ? Number(cp.costPrice||0) : 0) * Number(it.qty||0);
   }, 0);
-  costEl.textContent = `Sum of component cost prices: ${money(suggestedCost)}`;
+  costEl.textContent = `Sum of component cost prices: ${money(suggestedCost)} — used automatically if you leave Cost price blank.`;
   useCostBtn.style.display = 'inline-block';
   useCostBtn.onclick = ()=>{ document.getElementById('editCostPrice').value = suggestedCost.toFixed(2); };
 }
@@ -654,9 +691,20 @@ document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
       msg.innerHTML = '<div class="form-msg err">Add at least one item to this bundle.</div>';
       return;
     }
+    // If the admin never entered (or clicked "Use this as cost price" for)
+    // a cost, don't silently save it as 0 — that would overstate profit on
+    // every bundle sale. Fall back to the sum of the components' own cost
+    // prices, same number the "Use this as cost price" button would apply.
+    let finalBundleCostPrice = costPrice;
+    if(finalBundleCostPrice <= 0){
+      finalBundleCostPrice = items.reduce((s,it)=>{
+        const cp = allProducts.find(x=>x.id===it.productId);
+        return s + (cp ? Number(cp.costPrice||0) : 0) * Number(it.qty||0);
+      }, 0);
+    }
     // Bundles carry isBundle/bundleItems instead of stock/lowStock — their
     // availability is computed live from those items' own stock.
-    data = { name, category, unit, price, costPrice, compareAtPrice, featured, imageUrl, description,
+    data = { name, category, unit, price, costPrice: finalBundleCostPrice, compareAtPrice, featured, imageUrl, description,
       isBundle: true, bundleItems: items, stock: null, lowStock: null };
   } else {
     const stock = Math.max(0, parseInt(document.getElementById('editStock').value) || 0);
@@ -777,7 +825,9 @@ function openOrderDetails(id){
       <div><strong>Payment</strong><br><span class="pill pay-${payStatus}">${payLabel}</span> ${methodLabel}${order.paymentReference ? ' · Ref: '+esc(order.paymentReference) : ''}</div>
       <div><strong>Status</strong><br>${ORDER_STATUS_LABELS[status]||status}</div>
     </div>
-    ${order.creditApplied>0 ? `<div style="margin-bottom:4px;"><strong>Subtotal</strong><br>${money(order.subtotal!=null?order.subtotal:order.total)}</div><div style="margin-bottom:4px; color:var(--plum-soft);">Store credit applied: −${money(order.creditApplied)}</div>` : ''}
+    ${(order.subtotal!=null && (order.creditApplied>0 || order.shippingFee>0)) ? `<div style="margin-bottom:4px;"><strong>Subtotal</strong><br>${money(order.subtotal)}</div>` : ''}
+    ${order.shippingFee>0 ? `<div style="margin-bottom:4px; color:var(--plum-soft);">Shipping: ${money(order.shippingFee)}</div>` : ''}
+    ${order.creditApplied>0 ? `<div style="margin-bottom:4px; color:var(--plum-soft);">Store credit applied: −${money(order.creditApplied)}</div>` : ''}
     <div><strong>Total</strong><br>${money(order.total)}</div>
   `;
   document.getElementById('orderDetailsOverlay').classList.add('show');
@@ -808,6 +858,9 @@ document.getElementById('saveTrackingBtn').addEventListener('click', async ()=>{
     await db.collection('orders').doc(currentDetailsOrderId).update(data);
     msg.innerHTML = '<div class="form-msg ok">Delivery info saved.</div>';
     toast(advancingToShipped ? 'Tracking saved — order marked as shipped and stock updated' : 'Delivery info saved');
+    if(advancingToShipped){
+      sendOrderStatusEmail({ ...order, courier, trackingNumber }, 'Shipped');
+    }
   }catch(err){
     msg.innerHTML = `<div class="form-msg err">${err.message}</div>`;
   }
@@ -820,6 +873,17 @@ async function verifyPayment(id){
       paymentStatus:'verified', paymentVerifiedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     toast('Payment marked as verified');
+    const order = (window._orders||[]).find(o=>o.id===id);
+    if(order){
+      // sendOrderInvoiceEmail no-ops silently if EMAILJS_INVOICE_TEMPLATE_ID
+      // is blank in firebase-config.js — in that case fall back to the
+      // plain status email so the customer still hears something.
+      if(EMAILJS_INVOICE_TEMPLATE_ID){
+        sendOrderInvoiceEmail(order);
+      }else{
+        sendOrderStatusEmail(order, 'Payment verified');
+      }
+    }
   }catch(err){ alert(err.message); }
 }
 
@@ -861,9 +925,18 @@ async function ensureStockDeducted(order, reasonPrefix){
     stockDeducted: true, stockRestored: false,
     stockDeductions: deductions.map(d=>({productId:d.productId, qty:d.qty}))
   });
-  for(const item of deductions){
-    const label = item.bundleName ? `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'} (bundle: ${item.bundleName})` : `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'}`;
-    await adjustStock(item.productId, -Math.abs(item.qty), label);
+  const failed = await adjustStockBatch(
+    deductions.map(d=>({productId:d.productId, qty:-Math.abs(d.qty)})),
+    (item)=>{
+      const src = deductions.find(d=>d.productId===item.productId);
+      return src && src.bundleName ? `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'} (bundle: ${src.bundleName})` : `${reasonPrefix||'Order shipped'} — ${order.customerName||'customer'}`;
+    }
+  );
+  if(failed.length){
+    // stockDeducted is already true (by design, so retries don't double-
+    // decrement the items that DID succeed) — but flag loudly that some
+    // items didn't actually move, since that's no longer silent.
+    toast(`⚠️ Stock wasn't updated for ${failed.length} item(s) on this order — check Inventory manually.`);
   }
 }
 
@@ -892,8 +965,12 @@ async function restoreStockForOrder(order, reasonPrefix){
     ? order.stockDeductions
     : expandItemsForStock(order.items, allProducts);
   await db.collection('orders').doc(order.id).update({ stockDeducted: false, stockRestored: true });
-  for(const item of toRestore){
-    await adjustStock(item.productId, Math.abs(item.qty), `${reasonPrefix||'Returned'} — ${order.customerName||'customer'}`);
+  const failed = await adjustStockBatch(
+    toRestore.map(item=>({productId:item.productId, qty:Math.abs(item.qty)})),
+    `${reasonPrefix||'Returned'} — ${order.customerName||'customer'}`
+  );
+  if(failed.length){
+    toast(`⚠️ ${failed.length} item(s) from this order couldn't be added back to stock automatically — check Inventory manually.`);
   }
 }
 
@@ -901,7 +978,52 @@ async function restoreStockForOrder(order, reasonPrefix){
 // normal path; "cancelled" is included too so that cancelling an order
 // *after* it already shipped (stock already left the shelf) doesn't
 // silently leave inventory permanently short — see restoreStockForOrder.
+// "Damaged" is deliberately NOT here — a damaged/write-off item is gone,
+// not sellable, so it never goes back into stock.
 const RESTOCKING_STATUSES = ['returned','cancelled'];
+
+// Statuses that refund any store credit the customer spent on this order.
+// This is a separate list from RESTOCKING_STATUSES: "damaged" doesn't put
+// stock back (the item's destroyed), but the customer still didn't get a
+// usable product, so whatever credit they spent on it should still come
+// back to their balance.
+const CREDIT_REFUND_STATUSES = ['returned','cancelled','damaged'];
+
+// Refunds any store credit the customer spent on this order back to their
+// balance. Unlike stock (which only ever leaves the shelf at ship/fulfil
+// time), credit is deducted the moment the order is PLACED — so this needs
+// to run on every cancel/return regardless of whether stock was ever
+// deducted for the order. Guarded by `creditRestored` (mirrors
+// stockRestored) so flipping the status dropdown back and forth, or a
+// double-click, can never refund the same order's credit twice. No-ops
+// instantly if the order never used credit in the first place.
+async function restoreCreditForOrder(order, reasonPrefix){
+  const amount = Number(order.creditApplied || 0);
+  if(amount <= 0 || order.creditRestored) return;
+  if(!order.customerUid){
+    // Manual/offline sales never have store credit applied (customerUid is
+    // always null for those), but guard anyway rather than assume.
+    await db.collection('orders').doc(order.id).update({ creditRestored: true });
+    return;
+  }
+  const userRef = db.collection('users').doc(order.customerUid);
+  const orderRef = db.collection('orders').doc(order.id);
+  await db.runTransaction(async (tx)=>{
+    // Re-read both docs inside the transaction so a double-click, or a
+    // second admin tab, can't refund the same order's credit twice, and so
+    // the refund always lands on top of the customer's CURRENT balance
+    // rather than a possibly-stale one held in the browser.
+    const freshOrderDoc = await tx.get(orderRef);
+    if(!freshOrderDoc.exists || freshOrderDoc.data().creditRestored) return;
+    const freshUserDoc = await tx.get(userRef);
+    if(freshUserDoc.exists){
+      const current = Number(freshUserDoc.data().creditBalance || 0);
+      tx.update(userRef, { creditBalance: current + amount });
+    }
+    tx.update(orderRef, { creditRestored: true });
+  });
+  toast(`${money(amount)} store credit refunded to ${order.customerName || 'the customer'}`);
+}
 
 // Handles any status change from the dropdown.
 async function changeOrderStatus(id, newStatus){
@@ -912,10 +1034,15 @@ async function changeOrderStatus(id, newStatus){
     const label = newStatus==='shipped' ? 'shipped' : 'fulfilled';
     if(!confirm(`Payment for this order has not been marked verified yet. Mark it ${label} anyway?`)) return;
   }
+  const willRestoreCredit = CREDIT_REFUND_STATUSES.includes(newStatus) && Number(order.creditApplied||0) > 0 && !order.creditRestored;
   if(RESTOCKING_STATUSES.includes(newStatus) && order.stockDeducted && !order.stockRestored){
-    if(!confirm(`This will add the order's items back to stock, since they were already deducted. Mark it as ${ORDER_STATUS_LABELS[newStatus].toLowerCase()} anyway?`)) return;
+    const creditNote = willRestoreCredit ? ` and ${money(order.creditApplied)} in store credit refunded to the customer` : '';
+    if(!confirm(`This will add the order's items back to stock${creditNote}, since they were already deducted. Mark it as ${ORDER_STATUS_LABELS[newStatus].toLowerCase()} anyway?`)) return;
   } else if(newStatus === 'returned' && !order.stockDeducted){
-    if(!confirm('This order was never marked as shipped/fulfilled, so there is no stock to bring back. Mark it as returned anyway?')) return;
+    const creditNote = willRestoreCredit ? ` (${money(order.creditApplied)} in store credit will still be refunded to the customer)` : '';
+    if(!confirm(`This order was never marked as shipped/fulfilled, so there is no stock to bring back${creditNote}. Mark it as returned anyway?`)) return;
+  } else if(willRestoreCredit){
+    if(!confirm(`This order used ${money(order.creditApplied)} in store credit — it will be refunded to the customer's balance. Mark it as ${ORDER_STATUS_LABELS[newStatus].toLowerCase()} anyway?`)) return;
   }
   try{
     if(STOCK_DEDUCTING_STATUSES.includes(newStatus)){
@@ -924,10 +1051,17 @@ async function changeOrderStatus(id, newStatus){
     if(RESTOCKING_STATUSES.includes(newStatus)){
       await restoreStockForOrder(order, newStatus==='returned' ? 'Returned to seller' : 'Order cancelled');
     }
+    if(CREDIT_REFUND_STATUSES.includes(newStatus)){
+      const creditReason = newStatus==='returned' ? 'Returned to seller' : (newStatus==='cancelled' ? 'Order cancelled' : 'Marked damaged / write-off');
+      await restoreCreditForOrder(order, creditReason);
+    }
     const updateData = { status:newStatus };
     if(newStatus === 'done') updateData.fulfilledAt = firebase.firestore.FieldValue.serverTimestamp();
     await db.collection('orders').doc(id).update(updateData);
     toast(`Order status set to ${ORDER_STATUS_LABELS[newStatus]}`);
+    if(newStatus === 'shipped' || newStatus === 'done'){
+      sendOrderStatusEmail(order, ORDER_STATUS_LABELS[newStatus]);
+    }
     if(newStatus === 'done'){
       await processReferralReward({ ...order, id, status:'done' });
     }
@@ -1069,9 +1203,15 @@ async function deleteOrder(id){
   const order = (window._orders||[]).find(o=>o.id===id);
   if(!order) return;
   const willRestock = order.stockDeducted && !order.stockRestored;
-  const msg = willRestock
-    ? 'Delete this order? Its items will be added back to stock since they were already deducted. This cannot be undone.'
-    : 'Delete this order? This cannot be undone.';
+  const willRefundCredit = Number(order.creditApplied||0) > 0 && !order.creditRestored;
+  let msg = 'Delete this order? This cannot be undone.';
+  if(willRestock && willRefundCredit){
+    msg = `Delete this order? Its items will be added back to stock and ${money(order.creditApplied)} in store credit will be refunded to the customer, since neither had been reversed yet. This cannot be undone.`;
+  } else if(willRestock){
+    msg = 'Delete this order? Its items will be added back to stock since they were already deducted. This cannot be undone.';
+  } else if(willRefundCredit){
+    msg = `Delete this order? ${money(order.creditApplied)} in store credit will be refunded to the customer, since it hadn't been reversed yet. This cannot be undone.`;
+  }
   if(!confirm(msg)) return;
   try{
     if(willRestock){
@@ -1081,9 +1221,16 @@ async function deleteOrder(id){
       const toRestore = (Array.isArray(order.stockDeductions) && order.stockDeductions.length)
         ? order.stockDeductions
         : expandItemsForStock(order.items, allProducts);
-      for(const item of toRestore){
-        await adjustStock(item.productId, Math.abs(item.qty), `Order deleted — ${order.customerName||'customer'}`);
+      const failed = await adjustStockBatch(
+        toRestore.map(item=>({productId:item.productId, qty:Math.abs(item.qty)})),
+        `Order deleted — ${order.customerName||'customer'}`
+      );
+      if(failed.length){
+        toast(`⚠️ ${failed.length} item(s) couldn't be added back to stock — check Inventory manually.`);
       }
+    }
+    if(willRefundCredit){
+      await restoreCreditForOrder(order, 'Order deleted');
     }
     await db.collection('orders').doc(id).delete();
     toast('Order deleted');
@@ -1323,6 +1470,13 @@ if(saveManualSaleBtn) saveManualSaleBtn.addEventListener('click', async ()=>{
       paymentMethod: 'manual', paymentReference: '', paymentStatus: 'verified',
       source: 'manual',
       status: 'done', stockDeducted: true,
+      // FIX: snapshot the exact {productId, qty} pairs that were deducted,
+      // same as ensureStockDeducted() does for online orders. Without this,
+      // restoreStockForOrder()/deleteOrder() fell back to re-expanding
+      // order.items live — which is harmless today (manual sales can't
+      // contain bundles) but silently breaks the moment bundles are ever
+      // allowed here, or if a product's identity changes before a refund.
+      stockDeductions: items.map(i=>({productId:i.productId, qty:i.qty})),
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       fulfilledAt: firebase.firestore.FieldValue.serverTimestamp()
     });
@@ -1412,6 +1566,8 @@ async function loadSettingsIntoForm(){
     document.getElementById('setTawkWidgetId').value = s.tawkWidgetId || '';
     document.getElementById('setReferralReward').value = s.referralRewardAmount != null ? s.referralRewardAmount : 100;
     document.getElementById('setReferralEnabled').value = s.referralEnabled === false ? 'false' : 'true';
+    document.getElementById('setShippingFee').value = s.shippingFee != null ? s.shippingFee : 0;
+    document.getElementById('setShippingFeeEnabled').value = s.shippingFeeEnabled ? 'true' : 'false';
     wireImageUpload({ fileInputId:'setHeroImageFile', previewId:'setHeroImagePreview', urlFieldId:'setHeroImage', progressId:'setHeroImageProgress', folder:'settings', existingUrl: s.heroImage||'' });
     wireImageUpload({ fileInputId:'setAboutImageFile', previewId:'setAboutImagePreview', urlFieldId:'setAboutImage', progressId:'setAboutImageProgress', folder:'settings', existingUrl: s.aboutImage||'' });
     wireImageUpload({ fileInputId:'setGcashQRFile', previewId:'setGcashQRPreview', urlFieldId:'setGcashQR', progressId:'setGcashQRProgress', folder:'settings', existingUrl: s.gcashQR||'' });
@@ -1469,6 +1625,8 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
     tawkWidgetId: document.getElementById('setTawkWidgetId').value.trim(),
     referralRewardAmount: parseFloat(document.getElementById('setReferralReward').value) || 0,
     referralEnabled: document.getElementById('setReferralEnabled').value === 'true',
+    shippingFee: Math.max(0, parseFloat(document.getElementById('setShippingFee').value) || 0),
+    shippingFeeEnabled: document.getElementById('setShippingFeeEnabled').value === 'true',
   };
   try{
     await db.collection('settings').doc('site').set(data, {merge:true});

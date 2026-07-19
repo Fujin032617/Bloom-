@@ -245,8 +245,25 @@ function generateSixDigitCode(){
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+// Basic client-side throttle so the "Resend code" button (or anyone calling
+// emailjs.send directly with the public key visible in this file) can't fire
+// off unlimited emails. This is a courtesy speed bump, NOT real protection —
+// it lives in the browser and can be bypassed by anyone editing JS locally.
+// The actual fix is in your EmailJS dashboard: Email Services -> your
+// service -> restrict allowed origins/domains, and consider enabling
+// EmailJS's built-in rate limiting so THIS key can only be used from your
+// own domain, capped per hour.
+const VERIFICATION_CODE_COOLDOWN_MS = 30 * 1000; // 30 seconds between sends
+let _lastVerificationCodeSentAt = 0;
+
 // Creates a fresh code, stores it (10 min expiry), and emails it via EmailJS.
 async function sendVerificationCode(uid, email, name){
+  const sinceLast = Date.now() - _lastVerificationCodeSentAt;
+  if(sinceLast < VERIFICATION_CODE_COOLDOWN_MS){
+    const waitSec = Math.ceil((VERIFICATION_CODE_COOLDOWN_MS - sinceLast) / 1000);
+    throw new Error(`Please wait ${waitSec}s before requesting another code.`);
+  }
+  _lastVerificationCodeSentAt = Date.now();
   const code = generateSixDigitCode();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes from now
 
@@ -278,6 +295,129 @@ async function checkVerificationCode(uid, enteredCode){
   await db.collection('users').doc(uid).update({ emailVerified: true });
   await ref.delete();
   return { ok:true };
+}
+
+// ---------------------------------------------------------------------
+// ORDER STATUS CHANGE NOTIFICATIONS (client-side, no backend needed)
+// Used by both shop.js (a one-time check right after sign-in) and
+// account.js (live, while the "My orders" tab is open) so a customer
+// finds out an order moved forward even if they never think to check
+// account.html — reduces "where's my order" messages.
+// ---------------------------------------------------------------------
+const CUSTOMER_ORDER_STATUS_LABELS = {new:'Pending review', confirmed:'Approved', processing:'Processing', shipped:'Shipped', done:'Delivered', cancelled:'Cancelled', returned:'Returned to seller', damaged:'Damaged in transit'};
+
+// Compares this customer's current order statuses against the last
+// snapshot saved in localStorage, and toasts anything that changed since
+// the last time this function ran for them (e.g. an admin marked
+// something "Shipped" while they were away). The very first time it ever
+// runs for a given uid it just records the starting snapshot silently —
+// nobody needs a toast for the state their orders were already in.
+function notifyOrderStatusChanges(orders, uid){
+  if(!uid) return;
+  const key = `bloome_orderstatus_${uid}`;
+  let prev = {};
+  try{ prev = JSON.parse(localStorage.getItem(key) || 'null') || {}; }catch(err){ prev = {}; }
+  const seenBefore = (()=>{ try{ return localStorage.getItem(key + '_seen') === '1'; }catch(err){ return false; } })();
+  const next = {};
+  const changes = [];
+  (orders||[]).forEach(o=>{
+    const status = o.status || 'new';
+    next[o.id] = status;
+    if(seenBefore && prev[o.id] && prev[o.id] !== status){
+      const label = CUSTOMER_ORDER_STATUS_LABELS[status] || status;
+      changes.push(`Order #${o.id.slice(-8).toUpperCase()} is now "${label}"`);
+    }
+  });
+  try{
+    localStorage.setItem(key, JSON.stringify(next));
+    localStorage.setItem(key + '_seen', '1');
+  }catch(err){ console.error('Could not save order-status snapshot', err); }
+  // Staggered so multiple changed orders don't all flash past at once.
+  changes.forEach((msg, i)=> setTimeout(()=>toast(msg), i * 3200));
+}
+
+// Optional: emails the customer when their order reaches a milestone
+// status (payment verified / shipped / delivered). Leave
+// EMAILJS_ORDER_UPDATE_TEMPLATE_ID blank to skip email entirely and rely
+// only on the in-app toast above — this quietly no-ops if it's unset, or
+// if the order has no email on file (e.g. a manual/offline sale), so it's
+// always safe to call from admin.js without extra guards at the call site.
+const EMAILJS_ORDER_UPDATE_TEMPLATE_ID = ""; // see login.html setup notes, step 8, to enable
+async function sendOrderStatusEmail(order, statusLabel){
+  if(!EMAILJS_ORDER_UPDATE_TEMPLATE_ID || !order || !order.email) return;
+  try{
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_ORDER_UPDATE_TEMPLATE_ID, {
+      to_email: order.email,
+      to_name: order.customerName || order.email,
+      order_id: (order.id||'').slice(-8).toUpperCase(),
+      status: statusLabel,
+      courier: order.courier || order.shippingMethod || '',
+      tracking_number: order.trackingNumber || ''
+    }, EMAILJS_PUBLIC_KEY);
+  }catch(err){ console.error('Could not send order status email', err); }
+}
+
+// ---------------------------------------------------------------------
+// INVOICE EMAIL — sent once, when an admin marks a payment as verified
+// (see admin.js verifyPayment()). Leave EMAILJS_INVOICE_TEMPLATE_ID blank
+// to skip this and fall back to the plain sendOrderStatusEmail() above.
+// See login.html setup notes, step 9, for how to build the template.
+// ---------------------------------------------------------------------
+const EMAILJS_INVOICE_TEMPLATE_ID = "template_u4st33w";
+
+// Builds a small HTML <table> of line items to drop into the {{items_html}}
+// merge tag. Kept separate from the send function so it's easy to unit-test
+// or reuse (e.g. from a future "resend invoice" button) without re-sending.
+function buildInvoiceItemsHtml(items){
+  const rows = (items||[]).map(i=>{
+    const qty = Number(i.qty||0);
+    const price = Number(i.price||0);
+    return `<tr>
+      <td style="padding:6px 10px; border-bottom:1px solid #eee;">${esc(i.name)||'Item'}</td>
+      <td style="padding:6px 10px; border-bottom:1px solid #eee; text-align:center;">${qty}</td>
+      <td style="padding:6px 10px; border-bottom:1px solid #eee; text-align:right;">${money(price)}</td>
+      <td style="padding:6px 10px; border-bottom:1px solid #eee; text-align:right;">${money(qty*price)}</td>
+    </tr>`;
+  }).join('');
+  return `<table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead><tr>
+      <th style="text-align:left; padding:6px 10px; border-bottom:2px solid #333;">Item</th>
+      <th style="text-align:center; padding:6px 10px; border-bottom:2px solid #333;">Qty</th>
+      <th style="text-align:right; padding:6px 10px; border-bottom:2px solid #333;">Price</th>
+      <th style="text-align:right; padding:6px 10px; border-bottom:2px solid #333;">Line total</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Called right after an order's paymentStatus flips to 'verified'. Safe to
+// call unconditionally — it quietly no-ops if the template ID is blank or
+// the order has no email on file (e.g. a manual/offline sale).
+async function sendOrderInvoiceEmail(order){
+  if(!EMAILJS_INVOICE_TEMPLATE_ID || !order || !order.email) return;
+  const methodLabel = order.paymentMethod === 'gcash' ? 'GCash'
+    : order.paymentMethod === 'bank' ? 'Bank/InstaPay'
+    : order.paymentMethod === 'credit' ? 'Store credit'
+    : '—';
+  const orderDate = order.createdAt && order.createdAt.toDate ? order.createdAt.toDate().toLocaleDateString() : '';
+  try{
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_INVOICE_TEMPLATE_ID, {
+      to_email: order.email,
+      to_name: order.customerName || order.email,
+      order_id: (order.id||'').slice(-8).toUpperCase(),
+      order_date: orderDate,
+      items_html: buildInvoiceItemsHtml(order.items),
+      subtotal: money(order.subtotal != null ? order.subtotal : order.total),
+      shipping_fee: money(order.shippingFee || 0),
+      credit_applied: money(order.creditApplied || 0),
+      total: money(order.total),
+      payment_method: methodLabel,
+      payment_reference: order.paymentReference || '—',
+      delivery_address: order.address || '',
+      courier: order.shippingMethod || order.courier || '',
+      current_year: new Date().getFullYear()
+    }, EMAILJS_PUBLIC_KEY);
+  }catch(err){ console.error('Could not send invoice email', err); }
 }
 
 // ---------------------------------------------------------------------

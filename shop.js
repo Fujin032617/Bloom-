@@ -17,6 +17,7 @@ let searchTerm = '';
 let siteSettings = {};
 let selectedPayMethod = null;
 let userCreditBalance = 0; // this customer's referral store credit, kept live
+let customerProfile = {}; // { name, phone, address } from users/{uid}, used to pre-fill checkout
 
 // ============================================================
 // CART PERSISTENCE (localStorage)
@@ -80,7 +81,30 @@ requireRole(['customer','admin'], (user, role)=>{
   listenProducts();
   loadSiteSettings();
   listenUserCredit(user.uid);
+  loadCustomerProfile(user.uid);
+
+  // One-time check (not live) so a customer finds out an order moved
+  // forward — e.g. "Shipped" — even if they never open account.html.
+  db.collection('orders').where('customerUid','==',user.uid).get()
+    .then(snap=>{
+      const orders = [];
+      snap.forEach(doc=> orders.push({id:doc.id, ...doc.data()}));
+      notifyOrderStatusChanges(orders, user.uid);
+    })
+    .catch(err=>console.error('Could not check order status updates', err));
 });
+
+// Loads this customer's saved name/phone/address so the checkout modal
+// can pre-fill itself instead of making them retype it every order.
+async function loadCustomerProfile(uid){
+  try{
+    const doc = await db.collection('users').doc(uid).get();
+    customerProfile = doc.exists ? (doc.data() || {}) : {};
+  }catch(err){
+    console.error('Could not load saved profile for checkout pre-fill', err);
+    customerProfile = {};
+  }
+}
 
 // Live so a reward credited by the admin (or a previous order that used some
 // credit) is always reflected before the customer checks out again.
@@ -99,6 +123,10 @@ async function loadSiteSettings(){
     if(siteSettings.tawkPropertyId && siteSettings.tawkWidgetId){
       loadTawkWidget(siteSettings.tawkPropertyId, siteSettings.tawkWidgetId);
     }
+    // Cart/checkout totals may have already rendered with the old default
+    // (no fee) before this settings fetch resolved — refresh them now that
+    // the real shipping fee is known.
+    renderCart();
   }catch(err){ console.error('Could not load payment settings', err); }
 }
 
@@ -370,6 +398,17 @@ function renderCart(){
     </div>`;
   }).join('');
   document.getElementById('cartSubtotal').textContent = money(subtotal);
+  const shippingRow = document.getElementById('cartShippingRow');
+  const shippingFeeEl = document.getElementById('cartShippingFee');
+  const shipping = currentShippingFee();
+  if(shippingRow && shippingFeeEl){
+    if(shipping > 0){
+      shippingFeeEl.textContent = money(shipping);
+      shippingRow.style.display = 'flex';
+    } else {
+      shippingRow.style.display = 'none';
+    }
+  }
   document.getElementById('checkoutBtn').disabled = false;
   updateCheckoutTotals();
 }
@@ -394,9 +433,25 @@ document.getElementById('checkoutBtn').addEventListener('click', ()=>{
   const creditBox = document.getElementById('applyCreditCheckbox');
   if(creditBox) creditBox.checked = false;
   document.querySelectorAll('#checkoutModalOverlay .medAckItem').forEach(cb=>cb.checked=false);
+  prefillCheckoutFromProfile();
   updateCreditUI();
   document.getElementById('checkoutModalOverlay').classList.add('show');
 });
+
+// Fills in name/phone/address from the customer's saved profile — only
+// into fields that are still empty, so it never overwrites something
+// they've already typed (e.g. a different shipping address for this
+// particular order). Email comes straight from their signed-in account.
+function prefillCheckoutFromProfile(){
+  const nameEl = document.getElementById('custName');
+  const emailEl = document.getElementById('custEmail');
+  const phoneEl = document.getElementById('custPhone');
+  const addressEl = document.getElementById('custAddress');
+  if(nameEl && !nameEl.value.trim() && customerProfile.name) nameEl.value = customerProfile.name;
+  if(emailEl && !emailEl.value.trim() && auth.currentUser && auth.currentUser.email) emailEl.value = auth.currentUser.email;
+  if(phoneEl && !phoneEl.value.trim() && customerProfile.phone) phoneEl.value = customerProfile.phone;
+  if(addressEl && !addressEl.value.trim() && customerProfile.address) addressEl.value = customerProfile.address;
+}
 
 // ============================================================
 // STORE CREDIT (referral rewards) AT CHECKOUT
@@ -415,17 +470,25 @@ function updateCreditUI(){
   if(label) label.textContent = `Apply store credit (${money(userCreditBalance)} available)`;
   updateCheckoutTotals();
 }
+// The shop currently only offers one flat shipping fee (set by the admin
+// in Settings), applied the same way regardless of courier or address —
+// not calculated per-courier/per-distance.
+function currentShippingFee(){
+  return siteSettings.shippingFeeEnabled ? Number(siteSettings.shippingFee || 0) : 0;
+}
 function updateCheckoutTotals(){
   const box = document.getElementById('checkoutTotalsBox');
   if(!box) return;
   const subtotal = currentCartSubtotal();
+  const shipping = currentShippingFee();
   const checkbox = document.getElementById('applyCreditCheckbox');
   const wantsCredit = checkbox ? checkbox.checked : false;
-  const creditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal) : 0;
-  const total = Math.max(0, subtotal - creditApplied);
+  const creditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal + shipping) : 0;
+  const total = Math.max(0, subtotal + shipping - creditApplied);
+  const shippingLine = shipping > 0 ? ` + shipping ${money(shipping)}` : '';
   box.innerHTML = creditApplied > 0
-    ? `Subtotal ${money(subtotal)} − credit ${money(creditApplied)} = <strong style="color:var(--plum);">${money(total)}</strong>`
-    : `Total: <strong style="color:var(--plum);">${money(subtotal)}</strong>`;
+    ? `Subtotal ${money(subtotal)}${shippingLine} − credit ${money(creditApplied)} = <strong style="color:var(--plum);">${money(total)}</strong>`
+    : `Subtotal ${money(subtotal)}${shippingLine} — Total: <strong style="color:var(--plum);">${money(total)}</strong>`;
 }
 const applyCreditCheckboxEl = document.getElementById('applyCreditCheckbox');
 if(applyCreditCheckboxEl) applyCreditCheckboxEl.addEventListener('change', updateCheckoutTotals);
@@ -523,13 +586,14 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
     return { productId:id, name:p.name, price:p.price, costPrice:Number(p.costPrice||0), qty:cart[id] };
   });
   const subtotal = items.reduce((s,i)=>s+i.price*i.qty,0);
+  const shippingFee = currentShippingFee();
   const creditCheckbox = document.getElementById('applyCreditCheckbox');
   const wantsCredit = creditCheckbox ? creditCheckbox.checked : false;
   // Best-effort preview using the live-synced balance — the actual amount
   // deducted is re-checked against the real balance inside the transaction
   // below so a stale balance in the browser can never overspend it.
-  const previewCreditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal) : 0;
-  const previewTotal = Math.max(0, subtotal - previewCreditApplied);
+  const previewCreditApplied = wantsCredit ? Math.min(userCreditBalance, subtotal + shippingFee) : 0;
+  const previewTotal = Math.max(0, subtotal + shippingFee - previewCreditApplied);
   const paymentNeeded = previewTotal > 0;
 
   if(paymentNeeded && !selectedPayMethod){
@@ -543,6 +607,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
 
   const btn = document.getElementById('submitOrderBtn');
   btn.disabled = true; btn.textContent = 'Sending...';
+  let finalTotal = 0, finalCreditApplied = 0;
   try{
     const uid = auth.currentUser ? auth.currentUser.uid : null;
     const orderRef = db.collection('orders').doc();
@@ -558,10 +623,12 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
         userRef = db.collection('users').doc(uid);
         const userDoc = await tx.get(userRef);
         freshBalance = userDoc.exists ? Number(userDoc.data().creditBalance||0) : 0;
-        creditApplied = Math.min(freshBalance, subtotal);
+        creditApplied = Math.min(freshBalance, subtotal + shippingFee);
       }
-      const total = Math.max(0, subtotal - creditApplied);
+      const total = Math.max(0, subtotal + shippingFee - creditApplied);
       const fullyCoveredByCredit = total <= 0;
+      finalTotal = total;
+      finalCreditApplied = creditApplied;
 
       // Guards against the rare case where the balance changed between the
       // preview above and this transaction's real read (e.g. a second tab,
@@ -577,7 +644,7 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       }
       tx.set(orderRef, {
         customerName:name, email, phone, address, shippingMethod, notes,
-        items, subtotal, creditApplied, total,
+        items, subtotal, shippingFee, creditApplied, total,
         customerUid: uid,
         medicalAcknowledged: true,
         medicalAcknowledgedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -588,7 +655,10 @@ document.getElementById('submitOrderBtn').addEventListener('click', async ()=>{
       });
     });
 
-    msgBox.innerHTML = '<div class="form-msg ok">Order request sent! We will verify your payment and confirm shortly.</div>';
+    let breakdown = `Subtotal ${money(subtotal)}`;
+    if(shippingFee > 0) breakdown += ` + shipping ${money(shippingFee)}`;
+    if(finalCreditApplied > 0) breakdown += ` − credit ${money(finalCreditApplied)}`;
+    msgBox.innerHTML = `<div class="form-msg ok">Order request sent! ${breakdown} = <strong>${money(finalTotal)}</strong>. We will verify your payment and confirm shortly.</div>`;
     cart = {};
     saveCart();
     renderCart();

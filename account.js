@@ -185,6 +185,43 @@ document.getElementById('copyReferralBtn').addEventListener('click', ()=>{
 });
 
 // ============================================================
+// SELF-SERVICE CANCEL (customer-initiated)
+// Only allowed while an order is still "new" (pending review) — nothing
+// has been confirmed, paid-verified, or shipped yet, so there's no stock
+// to put back and no delivery to unwind. Once an admin moves it past
+// "new", the button stops showing (see renderOrders) and cancelling
+// becomes an admin-only action from that point on. The matching Firestore
+// rule enforces this same new->cancelled-only restriction server-side, so
+// this can't be bypassed by editing the request by hand.
+// ============================================================
+async function cancelMyOrder(orderId){
+  // Orders paid for (in part or in full) with store credit can't be
+  // self-cancelled here: a customer isn't allowed to top up their own
+  // credit balance (see the users/{uid} update rule), so refunding it back
+  // has to happen from the admin side, where cancelling/deleting an order
+  // now correctly restores any credit that was spent on it. This check is
+  // just a friendly heads-up — renderOrders() already hides the button in
+  // this case; the Firestore rule for order cancellation blocks it too.
+  const order = (window._myOrders||[]).find(o=>o.id===orderId);
+  if(order && Number(order.creditApplied||0) > 0){
+    toast('This order used store credit — please message us to cancel it so your credit can be refunded.');
+    return;
+  }
+  if(!confirm('Cancel this order? This cannot be undone.')) return;
+  try{
+    await db.collection('orders').doc(orderId).update({
+      status: 'cancelled',
+      cancelledByCustomer: true,
+      cancelledAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast('Order cancelled');
+  }catch(err){
+    console.error(err);
+    toast('Could not cancel — please refresh and try again, or contact us.');
+  }
+}
+
+// ============================================================
 // ORDER HISTORY (live)
 // ============================================================
 function listenMyOrders(uid){
@@ -198,8 +235,10 @@ function listenMyOrders(uid){
       const tb = b.createdAt && b.createdAt.toMillis ? b.createdAt.toMillis() : 0;
       return tb - ta;
     });
+    window._myOrders = orders; // so cancelMyOrder can check creditApplied before cancelling
     renderOrders(orders);
     updateReferralEligibility(orders);
+    notifyOrderStatusChanges(orders, uid);
   }, err=>{
     console.error(err);
     document.getElementById('ordersList').innerHTML =
@@ -247,9 +286,15 @@ function renderOrders(orders){
       <ul class="order-items-list">${itemsHtml}</ul>
       ${progressHtml}
       ${trackingHtml}
+      ${o.shippingFee>0 ? `<div class="order-total-row" style="font-weight:400; font-size:12.5px; color:var(--plum-soft);"><span>Shipping</span><span>${money(o.shippingFee)}</span></div>` : ''}
       ${o.creditApplied>0 ? `<div class="order-total-row" style="font-weight:400; font-size:12.5px; color:var(--plum-soft);"><span>Store credit applied</span><span>−${money(o.creditApplied)}</span></div>` : ''}
       <div class="order-total-row"><span>Total</span><span>${money(o.total)}</span></div>
       <div style="font-size:11.5px; color:var(--plum-soft); margin-top:6px;">${esc(payLabel)}</div>
+      ${status==='new' ? (
+        Number(o.creditApplied||0) > 0
+          ? `<div style="font-size:11.5px; color:var(--plum-soft); margin-top:10px;">This order used store credit — message us to cancel it so your credit can be refunded.</div>`
+          : `<button class="icon-btn danger" style="margin-top:10px;" onclick="cancelMyOrder('${o.id}')">Cancel this order</button>`
+      ) : ''}
     </div>`;
   }).join('');
 }
